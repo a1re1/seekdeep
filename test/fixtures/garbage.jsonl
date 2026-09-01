@@ -1,0 +1,9 @@
+not json
+{
+{"foo":1}
+[1,2,3]
+null
+
+{"timestamp":"2026-01-01T00:00:00Z","x":1}
+{"ts":"2026-01-01T00:00:01Z","usage":{"input_tokens":5,"output_tokens":2}}
+{"type":"assistant"}

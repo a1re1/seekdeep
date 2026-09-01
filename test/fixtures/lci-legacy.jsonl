@@ -1,0 +1,12 @@
+{"at":"2026-08-30T10:00:00.000Z","goalId":"g1","images":[],"mentions":[],"text":"Add a --version flag to the CLI and cover it with a test.","type":"goal"}
+{"at":"2026-08-30T10:00:00.100Z","data":{"loop":1},"detail":"loop 1 — planning","goalId":"g1","iteration":1,"kind":"loop-start","type":"event"}
+{"at":"2026-08-30T10:00:00.200Z","data":{"cycle":1,"loop":1},"detail":"cycle 1/3 — planning [run 1/10]","goalId":"g1","iteration":1,"kind":"iteration-start","type":"event"}
+{"at":"2026-08-30T10:00:03.100Z","data":{"callId":"c1","loop":1,"toolName":"BASH","taskId":"task-1"},"detail":"BASH: bun test","goalId":"g1","iteration":1,"kind":"tool-call","type":"event"}
+{"at":"2026-08-30T10:00:04.000Z","data":{"callId":"c1","durationMs":900,"failed":false,"loop":1,"toolName":"BASH","taskId":"task-1"},"detail":"BASH: exit code 0","goalId":"g1","iteration":1,"kind":"tool-result","type":"event"}
+this line is corrupt
+{"at":"2026-08-30T10:00:04.100Z","data":{"callId":"c2","loop":1,"toolName":"EDIT","taskId":"task-1"},"detail":"EDIT: src/cli.ts","goalId":"g1","iteration":1,"kind":"tool-call","type":"event"}
+{"at":"2026-08-30T10:00:04.500Z","data":{"callId":"c2","durationMs":400,"failed":true,"loop":1,"toolName":"EDIT","taskId":"task-1"},"detail":"EDIT: old_string not found","goalId":"g1","iteration":1,"kind":"tool-result","type":"event"}
+{"at":"2026-08-30T10:00:05.000Z","data":{"taskId":"task-1"},"detail":"task-1 finished","goalId":"g1","iteration":1,"kind":"task-finished","type":"event"}
+{"at":"2026-08-30T10:00:05.100Z","data":{"loop":2},"detail":"loop 2 — task-2","goalId":"g1","iteration":2,"kind":"loop-start","type":"event"}
+{"at":"2026-08-30T10:00:08.000Z","detail":"## Summary\n\nAdded --version and a passing test.","goalId":"g1","iteration":2,"kind":"run-summary","type":"event"}
+{"at":"2026-08-30T10:00:08.100Z","goalId":"g1","reason":"completed","type":"run-end"}

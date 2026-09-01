@@ -1,0 +1,16 @@
+{
+  "name": "seekdeep",
+  "version": "0.1.0",
+  "description": "Static web app that loads local JSONL agent transcripts and renders a flame graph + timeline with timing, token usage, cache hits, and estimated cost.",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run scripts/dev.ts",
+    "build": "bun run scripts/build.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
