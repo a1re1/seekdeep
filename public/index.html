@@ -12,12 +12,16 @@
     <span class="tagline">trace viewer for agent transcripts — everything stays in your browser</span>
   </header>
 
+  <details id="index-panel" open>
+    <summary id="index-summary">session index</summary>
+    <section id="index-view" aria-label="session index"></section>
+  </details>
+
   <section id="drop-zone" tabindex="0">
-    <p><strong>Drop JSONL transcript files here</strong> (Claude Code, lci, Codex)</p>
-    <p>or</p>
+    <strong>drop JSONL transcripts here</strong>
     <label class="button"><input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" />choose files…</label>
     <button id="load-sample" type="button">Load sample</button>
-    <p id="drop-status" class="status"></p>
+    <span id="drop-status" class="status"></span>
   </section>
 
   <div id="session-tabs" hidden></div>
