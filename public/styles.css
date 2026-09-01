@@ -58,16 +58,113 @@ h1 { margin: 0; font-size: 1.4rem; letter-spacing: -0.02em; }
 .muted { color: var(--muted); }
 .small { font-size: 0.78rem; }
 
+/* ---- session index ------------------------------------------------------ */
+#index-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+#index-panel > summary {
+  cursor: pointer;
+  padding: 0.5rem 0.9rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  user-select: none;
+}
+#index-panel[open] > summary { border-bottom: 1px solid var(--border); }
+#index-view { padding: 0.7rem 0.9rem; }
+.index-toolbar { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.index-connect { font-size: 0.85rem; }
+.index-source { display: inline-flex; align-items: baseline; gap: 0.5rem; font-size: 0.85rem; }
+.index-source-label { color: var(--muted); }
+.index-forget { background: none; border: none; padding: 0; color: var(--muted); cursor: pointer; font: inherit; font-size: 0.78rem; }
+.index-forget:hover { color: var(--accent); text-decoration: underline; }
+.index-progress { color: var(--muted); font-size: 0.8rem; }
+.index-filter {
+  flex: 1 1 12rem;
+  min-width: 10rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  padding: 0.3rem 0.6rem;
+}
+.index-filter:focus { outline: none; border-color: var(--accent); }
+.index-empty { margin: 0.4rem 0; font-size: 0.85rem; }
+.index-project { border-top: 1px solid var(--border); }
+.index-project:first-of-type { border-top: none; }
+.index-project-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.4rem 0.2rem;
+  cursor: pointer;
+  user-select: none;
+}
+.index-project-label { font-weight: 600; }
+.index-project-meta { color: var(--muted); font-size: 0.8rem; }
+.index-worktree {
+  margin: 0.5rem 0 0.2rem 1.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.index-line { display: flex; align-items: baseline; gap: 0.5rem; }
+.index-session {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.18rem 0.35rem;
+  text-align: left;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.index-session:hover { background: var(--panel-2); }
+.index-session.child { margin-left: 1.4rem; }
+.index-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.index-branch { flex: none; color: var(--muted); font: 0.75rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.index-when { flex: none; color: var(--muted); font-size: 0.8rem; }
+.index-dur { flex: none; color: var(--muted); font-size: 0.8rem; }
+.index-kids { flex: none; background: none; border: none; padding: 0 0.2rem; color: var(--accent); cursor: pointer; font: inherit; font-size: 0.8rem; }
+.index-kids:hover { text-decoration: underline; }
+.index-children { display: flex; flex-direction: column; }
+.index-children[hidden] { display: none; }
+.badge {
+  flex: none;
+  border-radius: 4px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.badge-claude { background: color-mix(in srgb, var(--accent) 16%, transparent); color: color-mix(in srgb, var(--accent) 75%, var(--fg)); }
+.badge-lci { background: color-mix(in srgb, #8b5cf6 16%, transparent); color: color-mix(in srgb, #8b5cf6 75%, var(--fg)); }
+
+/* compact drop strip (drag/drop, file picker and sample stay available) */
 #drop-zone {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
   border: 2px dashed var(--border);
   border-radius: 10px;
-  padding: 1.25rem;
-  text-align: center;
+  padding: 0.45rem 0.9rem;
   color: var(--muted);
   outline: none;
 }
 #drop-zone p { margin: 0.35rem 0; }
 #drop-zone.dragover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+#drop-status { margin: 0; min-height: 0; }
 
 .button, button {
   display: inline-block;

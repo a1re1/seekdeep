@@ -2,6 +2,14 @@
 // pane + cache trace, summary panel, pricing editor. All state lives in the
 // browser; nothing is uploaded anywhere.
 
+import { clearScanCache, scanWithCache } from './index/cache.ts';
+import { forgetDirectory, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
+import type { SourceFile, SourceKind } from './index/fs.ts';
+import { buildIndex } from './index/link.ts';
+import type { ProjectGroup } from './index/link.ts';
+import type { SessionEntry } from './index/scan.ts';
+import { indexSummary, renderIndex } from './ui/index-view.ts';
+import type { IndexActions, IndexModel, IndexProgress } from './ui/index-view.ts';
 import type { Session, Span } from './model.ts';
 import { flatten } from './model.ts';
 import { parseTranscript } from './parsers/index.ts';
@@ -91,6 +99,136 @@ function main(): void {
       }
     })();
   });
+
+  // ---- session index ------------------------------------------------------
+  const indexHost = byId<HTMLElement>('index-view');
+  const indexPanel = byId<HTMLDetailsElement>('index-panel');
+  const indexSummaryLabel = byId<HTMLElement>('index-summary');
+  const index = {
+    sources: {
+      claude: { connected: false, stored: false, sessions: 0 },
+      lci: { connected: false, stored: false, sessions: 0 },
+    },
+    entries: { claude: [] as SessionEntry[], lci: [] as SessionEntry[] },
+    projects: [] as ProjectGroup[],
+    filter: '',
+    progress: null as IndexProgress | null,
+    busy: false,
+  };
+
+  const indexActions: IndexActions = {
+    connect: (kind) => void connectSource(kind),
+    forget: (kind) => void forgetSource(kind),
+    setFilter: (text) => {
+      index.filter = text;
+      renderIndexPanel();
+    },
+    open: (entry) => void openEntry(entry),
+  };
+
+  async function connectSource(kind: SourceKind): Promise<void> {
+    index.busy = true;
+    index.progress = null;
+    renderIndexPanel();
+    try {
+      // A remembered handle only needs permission re-granted (inside this
+      // click); fall back to the picker if that is refused or the dir is gone.
+      const files = (index.sources[kind].stored ? await restoreDirectory(kind) : null) ?? (await pickDirectory(kind));
+      if (files === null) {
+        setStatus('directory pick cancelled');
+        return;
+      }
+      await scanSource(kind, files);
+    } catch (err) {
+      setStatus(`failed to connect: ${err instanceof Error ? err.message : String(err)}`, true);
+    } finally {
+      index.busy = false;
+      renderIndexPanel();
+    }
+  }
+
+  async function scanSource(kind: SourceKind, files: SourceFile[]): Promise<void> {
+    index.busy = true;
+    const label = kind === 'claude' ? '~/.claude' : '~/.lci';
+    index.progress = { label: `scanning ${label}`, done: 0, total: files.length };
+    renderIndexPanel();
+    const entries = await scanWithCache(kind, files, (done, total) => {
+      index.progress = { label: `scanning ${label}`, done, total };
+      renderIndexPanel();
+    });
+    index.entries[kind] = entries;
+    index.sources[kind] = { connected: true, stored: true, sessions: entries.length };
+    index.progress = null;
+    index.busy = false;
+    rebuildIndex();
+    renderIndexPanel();
+  }
+
+  async function forgetSource(kind: SourceKind): Promise<void> {
+    try {
+      await Promise.all([forgetDirectory(kind), clearScanCache(kind)]);
+    } catch (err) {
+      setStatus(`failed to forget directory: ${err instanceof Error ? err.message : String(err)}`, true);
+    }
+    index.entries[kind] = [];
+    index.sources[kind] = { connected: false, stored: false, sessions: 0 };
+    index.filter = '';
+    rebuildIndex();
+    renderIndexPanel();
+  }
+
+  async function openEntry(entry: SessionEntry): Promise<void> {
+    try {
+      const name = entry.title === '' ? entry.id : entry.title;
+      setStatus(`opening ${name}…`);
+      const text = await entry.file.text();
+      const session = parseAndPrice(text, entry.path);
+      if (entry.title !== '') session.title = entry.title; // index title beats the parser's guess
+      addSession(session, name);
+      setStatus('');
+      indexPanel.open = false; // collapse the index so the trace is visible
+    } catch (err) {
+      setStatus(`failed to open session: ${err instanceof Error ? err.message : String(err)}`, true);
+    }
+  }
+
+  function rebuildIndex(): void {
+    index.projects = buildIndex([...index.entries.claude, ...index.entries.lci]);
+  }
+
+  function renderIndexPanel(): void {
+    const model: IndexModel = {
+      claude: index.sources.claude,
+      lci: index.sources.lci,
+      projects: index.projects,
+      filter: index.filter,
+      progress: index.progress,
+      busy: index.busy,
+    };
+    renderIndex(indexHost, model, indexActions);
+    indexSummaryLabel.textContent =
+      index.projects.length === 0 ? 'session index' : `session index — ${indexSummary(model)}`;
+  }
+
+  // On load, silently rescan directories the browser still lets us read;
+  // ones that need a permission prompt show as "reconnect" (prompts require
+  // a user gesture, so we cannot ask here).
+  async function restoreSources(): Promise<void> {
+    for (const kind of ['claude', 'lci'] as const) {
+      const stored = await storedState(kind);
+      if (stored === 'none') continue;
+      const files = stored === 'granted' ? await restoreDirectory(kind) : null;
+      if (files !== null) {
+        await scanSource(kind, files);
+      } else {
+        index.sources[kind] = { connected: false, stored: true, sessions: 0 };
+        renderIndexPanel();
+      }
+    }
+  }
+
+  renderIndexPanel();
+  void restoreSources();
 
   function parseAndPrice(text: string, name: string): Session {
     const session = parseTranscript(text, name);
