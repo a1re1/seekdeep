@@ -11,6 +11,8 @@ It is a static site. Nothing leaves your machine: open the published page,
 drop a `.jsonl` file (or a whole session directory) onto it, and the parse and
 render happen entirely in your browser.
 
+![seekdeep showing a Claude Code session: trace waterfall with a selected model call and its detail pane](docs/screenshot.png)
+
 ## What you get
 
 - **Trace waterfall** (OpenTelemetry / Jaeger style): one row per span —
