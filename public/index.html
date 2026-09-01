@@ -9,20 +9,19 @@
 <body>
   <header>
     <h1>seekdeep</h1>
-    <span class="tagline">trace viewer for agent transcripts — everything stays in your browser</span>
+    <span class="tagline">trace viewer for agent transcripts — static, local, no telemetry</span>
+    <section id="drop-zone" tabindex="0">
+      <strong>drop JSONL transcripts here</strong>
+      <label class="button"><input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" />choose files…</label>
+      <button id="load-sample" type="button">Load sample</button>
+      <span id="drop-status" class="status"></span>
+    </section>
   </header>
 
   <details id="index-panel" open>
     <summary id="index-summary">session index</summary>
     <section id="index-view" aria-label="session index"></section>
   </details>
-
-  <section id="drop-zone" tabindex="0">
-    <strong>drop JSONL transcripts here</strong>
-    <label class="button"><input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" />choose files…</label>
-    <button id="load-sample" type="button">Load sample</button>
-    <span id="drop-status" class="status"></span>
-  </section>
 
   <div id="session-tabs" hidden></div>
 
@@ -33,7 +32,7 @@
         <div class="card"><span class="k">model time</span><span class="v" id="s-model">–</span></div>
         <div class="card"><span class="k">tool time</span><span class="v" id="s-tool">–</span></div>
         <div class="card"><span class="k">idle time</span><span class="v" id="s-idle">–</span></div>
-        <div class="card"><span class="k">tokens (in / cache rd / cache wr / out)</span><span class="v" id="s-tokens">–</span></div>
+        <div class="card"><span class="k">tokens in / rd / wr / out</span><span class="v" id="s-tokens">–</span></div>
         <div class="card"><span class="k">cache hit</span><span class="v" id="s-hitrate">–</span></div>
         <div class="card"><span class="k">est. cost</span><span class="v" id="s-cost">–</span></div>
       </div>
@@ -45,20 +44,22 @@
       <div class="controls">
         <button id="collapse-all" type="button">collapse all</button>
         <button id="expand-all" type="button">expand all</button>
-        <span class="hint">click a row to inspect · double-click to zoom · ↑/↓ to move · Esc to clear</span>
+        <span class="hint">click a row to inspect · double-click to zoom · ↑/↓ to move · Esc to clear · f for focus</span>
         <span class="spacer"></span>
-        <button id="zoom-out" type="button" disabled>⤴ zoom out</button>
         <span id="breadcrumb" class="breadcrumb"></span>
+        <button id="zoom-out" type="button" disabled>⤴ zoom out</button>
+        <button id="focus-toggle" type="button" title="give the waterfall the whole window (f)">⤢ focus</button>
       </div>
-      <div class="trace-layout">
+      <div id="trace-layout" class="trace-layout">
         <div class="trace-column">
           <div id="trace" class="trace" aria-label="trace waterfall"></div>
-          <canvas id="cache-canvas" width="1200" height="64"></canvas>
+          <canvas id="cache-canvas" width="1200" height="48"></canvas>
           <p class="legend">
             <span class="sw model">model</span>
             <span class="sw tool">tool</span>
             <span class="sw turn">turn</span>
             <span class="sw subagent">subagent</span>
+            <span class="sw session">lci session</span>
             <span class="sw idle">idle</span>
             <span class="sw other">other</span>
             <span class="legend-sep">cache strip:</span>
@@ -67,6 +68,7 @@
             <span class="sw seg-input">uncached</span>
           </p>
         </div>
+        <div id="trace-splitter" class="trace-splitter" role="separator" aria-orientation="vertical" title="drag to resize the detail pane"></div>
         <aside id="detail-pane" class="detail-pane"><p class="muted empty">click a span to inspect it</p></aside>
       </div>
       <div id="tooltip" class="tooltip" hidden></div>
@@ -80,8 +82,6 @@
       </details>
     </section>
   </main>
-
-  <footer><span>seekdeep — static, local, no telemetry.</span></footer>
 
   <script type="module" src="./main.js"></script>
 </body>

@@ -186,6 +186,11 @@ export class TraceView {
     return this.rows.length;
   }
 
+  /** Re-derive rows after the tree changed in place (e.g. a grafted child). */
+  refresh(): void {
+    this.rebuild();
+  }
+
   private rebuild(): void {
     this.rows = this.root === null ? [] : flattenRows(this.root, this.collapsed);
     this.body.style.height = `${this.rows.length * ROW_HEIGHT}px`;
