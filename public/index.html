@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>seekdeep — agent transcript traces</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <h1>seekdeep</h1>
+    <span class="tagline">trace viewer for agent transcripts — everything stays in your browser</span>
+  </header>
+
+  <section id="drop-zone" tabindex="0">
+    <p><strong>Drop JSONL transcript files here</strong> (Claude Code, lci, Codex)</p>
+    <p>or</p>
+    <label class="button"><input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" />choose files…</label>
+    <button id="load-sample" type="button">Load sample</button>
+    <p id="drop-status" class="status"></p>
+  </section>
+
+  <div id="session-tabs" hidden></div>
+
+  <main id="app" hidden>
+    <section id="summary-panel">
+      <div class="cards">
+        <div class="card"><span class="k">wall time</span><span class="v" id="s-wall">–</span></div>
+        <div class="card"><span class="k">model time</span><span class="v" id="s-model">–</span></div>
+        <div class="card"><span class="k">tool time</span><span class="v" id="s-tool">–</span></div>
+        <div class="card"><span class="k">idle time</span><span class="v" id="s-idle">–</span></div>
+        <div class="card"><span class="k">tokens (in / cache rd / cache wr / out)</span><span class="v" id="s-tokens">–</span></div>
+        <div class="card"><span class="k">cache hit</span><span class="v" id="s-hitrate">–</span></div>
+        <div class="card"><span class="k">est. cost</span><span class="v" id="s-cost">–</span></div>
+      </div>
+      <details id="details-panel"><summary>details: slowest spans · top tools · cost by model</summary><div id="details-body"></div></details>
+      <div id="warnings" class="warnings" hidden></div>
+    </section>
+
+    <section id="trace-section">
+      <div class="controls">
+        <button id="collapse-all" type="button">collapse all</button>
+        <button id="expand-all" type="button">expand all</button>
+        <span class="hint">click a row to inspect · double-click to zoom · ↑/↓ to move · Esc to clear</span>
+        <span class="spacer"></span>
+        <button id="zoom-out" type="button" disabled>⤴ zoom out</button>
+        <span id="breadcrumb" class="breadcrumb"></span>
+      </div>
+      <div class="trace-layout">
+        <div class="trace-column">
+          <div id="trace" class="trace" aria-label="trace waterfall"></div>
+          <canvas id="cache-canvas" width="1200" height="64"></canvas>
+          <p class="legend">
+            <span class="sw model">model</span>
+            <span class="sw tool">tool</span>
+            <span class="sw turn">turn</span>
+            <span class="sw subagent">subagent</span>
+            <span class="sw idle">idle</span>
+            <span class="sw other">other</span>
+            <span class="legend-sep">cache strip:</span>
+            <span class="sw seg-read">cache read</span>
+            <span class="sw seg-write">cache write</span>
+            <span class="sw seg-input">uncached</span>
+          </p>
+        </div>
+        <aside id="detail-pane" class="detail-pane"><p class="muted empty">click a span to inspect it</p></aside>
+      </div>
+      <div id="tooltip" class="tooltip" hidden></div>
+    </section>
+
+    <section id="pricing-section">
+      <details>
+        <summary>pricing editor <span class="hint">(USD per 1M tokens, saved to localStorage)</span></summary>
+        <div id="pricing-table"></div>
+        <button id="pricing-reset" type="button">reset to defaults</button>
+      </details>
+    </section>
+  </main>
+
+  <footer><span>seekdeep — static, local, no telemetry.</span></footer>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -1,9 +1,9 @@
 # seekdeep
 
-Flame graphs for coding-agent sessions.
+Trace viewer for coding-agent sessions.
 
 `seekdeep` reads the JSONL transcripts that agent tools already write to disk —
-**Claude Code**, **lci**, **Codex** — and turns a session into a flame graph
+**Claude Code**, **lci**, **Codex** — and turns a session into a trace
 you can dig into: where the wall-clock went, what each model call cost, how
 the prompt cache behaved turn by turn, and which tools dominated.
 
@@ -13,13 +13,19 @@ render happen entirely in your browser.
 
 ## What you get
 
-- **Flame graph** of the session: prompts → assistant turns → tool calls,
-  nested by parent/child (subagents, sidechains) and sized by duration. Hover
-  for tokens, cache reads/writes, cost, and latency; click to zoom.
-- **Timeline** view: the same spans laid out against wall-clock time so gaps
-  (waiting on the user, rate-limit stalls, long tool runs) are obvious.
-- **Cache trace**: per-model-call cache read vs. cache write vs. uncached
-  input, so you can see the exact turn where the prefix went cold.
+- **Trace waterfall** (OpenTelemetry / Jaeger style): one row per span —
+  prompts → turns → model calls and tool calls, subagents nested underneath —
+  indented by depth on a shared time axis, so you can see what ran when,
+  what waited on what, and where the wall-clock went. Collapse subtrees,
+  double-click to zoom into a span, ↑/↓ to walk the rows.
+- **Detail pane**: click any span. Tool calls show their full input and
+  output. Model calls show the prompt split into *cached prefix / newly
+  cached / uncached* tokens, the **new context** appended since the previous
+  call (the prompts and tool results that could not come from cache), the
+  model's output, and thinking when the transcript has it.
+- **Cache trace**: one bar per model call in order — cache read vs. cache
+  write vs. uncached input — so the exact call where the prefix went cold
+  is obvious.
 - **Cost breakdown**: estimated spend per turn, per tool, per model, computed
   from a pricing table you can edit in the UI.
 - **Session summary**: total wall time, model time vs. tool time vs. idle,
@@ -71,6 +77,13 @@ bun run test
 Early. The parsers track the transcript shapes emitted by the tool versions
 we run day to day; when a tool changes its schema, open an issue with a
 (redacted) sample record.
+
+- Claude Code: verified against real multi-turn sessions (subagents, split
+  assistant records, 1h cache writes).
+- lci: `inference` events only exist in recent lci builds; older transcripts
+  still produce loop/tool spans with a "no inference events" warning.
+- Codex: `token_count` / `function_call` handling follows Codex's rollout
+  schema but has only been exercised on synthetic fixtures so far.
 
 ## License
 
