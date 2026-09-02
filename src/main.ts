@@ -2,16 +2,18 @@
 // pane + cache trace, summary panel, pricing editor. All state lives in the
 // browser; nothing is uploaded anywhere.
 
+import { clearActivityCache, collectBuckets } from './index/activity-cache.ts';
 import { clearScanCache, scanWithCache } from './index/cache.ts';
 import { forgetDirectory, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
 import type { SourceFile, SourceKind } from './index/fs.ts';
 import { buildIndex } from './index/link.ts';
-import type { ProjectGroup } from './index/link.ts';
+import type { ProjectGroup, SessionNode } from './index/link.ts';
 import type { SessionEntry } from './index/scan.ts';
 import { indexSummary, renderIndex } from './ui/index-view.ts';
 import type { IndexActions, IndexModel, IndexProgress } from './ui/index-view.ts';
 import type { Session, Span } from './model.ts';
 import { flatten } from './model.ts';
+import { findLaunchSpan, graftSession, graftedIds, isEmptySession } from './graft.ts';
 import { parseTranscript } from './parsers/index.ts';
 import { applyPricing, effectivePricing } from './pricing.ts';
 import { collectCacheBars, drawCacheTrace } from './ui/cache-trace.ts';
@@ -19,6 +21,9 @@ import { renderDetail, renderEmptyDetail } from './ui/detail.ts';
 import { byId, el, sizeCanvas } from './ui/dom.ts';
 import { readFiles } from './ui/loader.ts';
 import { renderPricingEditor } from './ui/pricing.ts';
+import { renderActivity } from './ui/activity-view.ts';
+import { aggregate, bucketSession, mergeBuckets, rangeFor } from './stats.ts';
+import type { UsageBucket } from './stats.ts';
 import { renderSummary, summarize } from './ui/summary.ts';
 import { TraceView } from './ui/trace.ts';
 
@@ -26,6 +31,9 @@ interface Loaded {
   session: Session;
   fileName: string;
   parents: Map<string, Span>; // child id → parent span
+  /** lci sessions grafted into this tree, by grafted span id. */
+  lciChildren: Map<string, SessionEntry>;
+  grafting: boolean;
 }
 
 const state = {
@@ -51,6 +59,16 @@ function main(): void {
 
   const trace = new TraceView(traceHost, tooltip);
   state.trace = trace;
+
+  // Activity page state (declared early: scans and drops invalidate it).
+  const activity = {
+    page: 'trace' as 'trace' | 'activity',
+    preset: '48h',
+    buckets: null as UsageBucket[] | null, // null until the first collection
+    collecting: false,
+    progress: null as string | null,
+  };
+
   trace.onSelect = (span) => renderDetailFor(span);
   trace.onZoom = (span) => zoomTo(span);
 
@@ -58,6 +76,10 @@ function main(): void {
     select: (span: Span) => trace.select(span),
     zoom: (span: Span) => zoomTo(span),
     parentOf: (span: Span) => current()?.parents.get(span.id) ?? null,
+    openSession: (span: Span) => {
+      const entry = current()?.lciChildren.get(span.id);
+      if (entry !== undefined) void openEntry(entry);
+    },
   };
 
   // ---- file loading -------------------------------------------------------
@@ -162,11 +184,15 @@ function main(): void {
     index.busy = false;
     rebuildIndex();
     renderIndexPanel();
+    // Sessions opened before this source was connected can now be grafted.
+    for (const loaded of state.sessions) void graftLciChildren(loaded);
+    activity.buckets = null; // re-collect (cache hits make it cheap) next time the page shows
+    if (activity.page === 'activity') void collectActivity();
   }
 
   async function forgetSource(kind: SourceKind): Promise<void> {
     try {
-      await Promise.all([forgetDirectory(kind), clearScanCache(kind)]);
+      await Promise.all([forgetDirectory(kind), clearScanCache(kind), clearActivityCache(kind)]);
     } catch (err) {
       setStatus(`failed to forget directory: ${err instanceof Error ? err.message : String(err)}`, true);
     }
@@ -175,6 +201,8 @@ function main(): void {
     index.filter = '';
     rebuildIndex();
     renderIndexPanel();
+    activity.buckets = null; // that source's usage must leave the page too
+    if (activity.page === 'activity') void collectActivity();
   }
 
   async function openEntry(entry: SessionEntry): Promise<void> {
@@ -184,7 +212,7 @@ function main(): void {
       const text = await entry.file.text();
       const session = parseAndPrice(text, entry.path);
       if (entry.title !== '') session.title = entry.title; // index title beats the parser's guess
-      addSession(session, name);
+      addSession(session, name, entry);
       setStatus('');
       indexPanel.open = false; // collapse the index so the trace is visible
     } catch (err) {
@@ -236,14 +264,86 @@ function main(): void {
     return session;
   }
 
-  function addSession(session: Session, fileName: string): void {
-    const parents = new Map<string, Span>();
-    for (const span of flatten(session.root)) for (const c of span.children) parents.set(c.id, span);
-    state.sessions.push({ session, fileName, parents });
+  function addSession(session: Session, fileName: string, entry?: SessionEntry): void {
+    const loaded: Loaded = { session, fileName, parents: new Map(), lciChildren: new Map(), grafting: false };
+    reindexParents(loaded);
+    state.sessions.push(loaded);
     state.active = state.sessions.length - 1;
     state.zoomNode = null;
+    activity.buckets = null; // a dropped transcript may add usage the index lacks
+    showPage('trace');
     renderTabs();
+    indexPanel.open = false; // the index yields to the trace; reopen it from its header
     render(true);
+    if (session.format === 'claude-code') void graftLciChildren(loaded, entry);
+  }
+
+  function reindexParents(loaded: Loaded): void {
+    loaded.parents.clear();
+    for (const span of flatten(loaded.session.root)) for (const c of span.children) loaded.parents.set(c.id, span);
+  }
+
+  // ---- lci children -------------------------------------------------------
+  /** The index node for a loaded Claude session, if the index knows it. */
+  function indexNodeFor(session: Session, entry?: SessionEntry): SessionNode | null {
+    for (const project of index.projects) {
+      for (const group of project.worktrees) {
+        for (const node of group.sessions) {
+          if (node.entry.kind !== 'claude') continue;
+          if (entry !== undefined ? node.entry.path === entry.path : node.entry.id === session.id) return node;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Read every lci session the index nests under this Claude session and
+   * graft it under the Bash call that launched it (or the active turn), so
+   * the waterfall shows the whole multi-harness journey. Runs after the
+   * first paint; the trace refreshes in place when it is done.
+   */
+  async function graftLciChildren(loaded: Loaded, entry?: SessionEntry): Promise<void> {
+    if (loaded.session.format !== 'claude-code' || loaded.grafting) return;
+    const node = indexNodeFor(loaded.session, entry);
+    if (node === null) return;
+    const have = graftedIds(loaded.session.root);
+    const todo = node.children.filter((c) => c.entry.kind === 'lci' && !have.has(c.entry.id));
+    if (todo.length === 0) return;
+    loaded.grafting = true;
+    setStatus(`nesting ${todo.length} lci session${todo.length === 1 ? '' : 's'}…`);
+    let added = 0;
+    let empty = 0;
+    try {
+      for (const child of todo) {
+        const e = child.entry;
+        try {
+          const session = parseAndPrice(await e.file.text(), e.path);
+          if (isEmptySession(session)) {
+            empty += 1; // e.g. review probes that never ran: nothing to draw
+            continue;
+          }
+          const host = findLaunchSpan(loaded.session.root, e.startMs);
+          const grafted = graftSession(loaded.session.root, host, session, { id: e.id, path: e.path, title: e.title });
+          loaded.lciChildren.set(grafted.id, e);
+          added += 1;
+        } catch (err) {
+          loaded.session.warnings.push(`could not nest lci session ${e.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      loaded.grafting = false;
+    }
+    setStatus('');
+    if (empty > 0) loaded.session.warnings.push(`${empty} empty lci session${empty === 1 ? '' : 's'} (no events) not nested`);
+    if (added === 0) return;
+    applyPricing(loaded.session, effectivePricing()); // rollups now include the children
+    reindexParents(loaded);
+    if (current() === loaded) {
+      trace.refresh();
+      render(false);
+      if (trace.selected !== null) renderDetailFor(trace.selected);
+    }
   }
 
   function current(): Loaded | undefined {
@@ -284,7 +384,7 @@ function main(): void {
       app.hidden = true;
       return;
     }
-    app.hidden = false;
+    app.hidden = activity.page !== 'trace'; // the activity page replaces the trace, it does not sit on top
     const sessionRoot = loaded.session.root;
     const root = state.zoomNode ?? sessionRoot;
 
@@ -326,11 +426,95 @@ function main(): void {
   // ---- pricing (re-applies to all sessions, refreshes summary + detail) ---
   renderPricingEditor(byId<HTMLElement>('pricing-table'), effectivePricing(), (table) => {
     for (const { session } of state.sessions) applyPricing(session, table);
+    renderActivityPage(); // charts re-price from the cached buckets, no rescan
     const loaded = current();
     if (loaded === undefined) return;
     renderSummary(byId<HTMLElement>('summary-panel'), loaded.session, summarize(loaded.session.root));
     if (trace.selected !== null) renderDetailFor(trace.selected);
   });
+
+  // ---- activity page ------------------------------------------------------
+  const activitySection = byId<HTMLElement>('activity');
+  const activityHost = byId<HTMLElement>('activity-host');
+  const navTrace = byId<HTMLButtonElement>('nav-trace');
+  const navActivity = byId<HTMLButtonElement>('nav-activity');
+
+  function showPage(page: 'trace' | 'activity'): void {
+    activity.page = page;
+    navTrace.classList.toggle('active', page === 'trace');
+    navActivity.classList.toggle('active', page === 'activity');
+    activitySection.hidden = page !== 'activity';
+    app.hidden = page !== 'trace' || current() === undefined;
+    if (page === 'activity') {
+      renderActivityPage();
+      if (activity.buckets === null) void collectActivity();
+    } else {
+      render(false);
+    }
+  }
+  navTrace.addEventListener('click', () => showPage('trace'));
+  navActivity.addEventListener('click', () => showPage('activity'));
+
+  /** Index entries plus sessions that were dropped in and are not in the index. */
+  function activitySources(): { entries: SessionEntry[]; extra: Session[] } {
+    const entries = [...index.entries.claude, ...index.entries.lci];
+    const known = new Set(entries.map((e) => e.id));
+    const extra = state.sessions.map((l) => l.session).filter((s) => !known.has(s.id));
+    return { entries, extra };
+  }
+
+  async function collectActivity(): Promise<void> {
+    if (activity.collecting) return;
+    const { entries, extra } = activitySources();
+    activity.collecting = true;
+    activity.progress = entries.length > 0 ? `reading 0 / ${entries.length} transcripts` : null;
+    renderActivityPage();
+    try {
+      const indexed = await collectBuckets(entries, (done, total) => {
+        activity.progress = `reading ${done} / ${total} transcripts`;
+        renderActivityPage();
+      });
+      activity.buckets = mergeBuckets([indexed, ...extra.map(bucketSession)]);
+    } catch (err) {
+      setStatus(`failed to read transcripts: ${err instanceof Error ? err.message : String(err)}`, true);
+      activity.buckets ??= [];
+    } finally {
+      activity.collecting = false;
+      activity.progress = null;
+      renderActivityPage();
+    }
+  }
+
+  function renderActivityPage(): void {
+    if (activity.page !== 'activity') return;
+    const { entries, extra } = activitySources();
+    const nothing = entries.length === 0 && extra.length === 0;
+    const preset = activity.preset as '48h' | '7d' | '30d' | 'all';
+    const buckets = activity.buckets;
+    renderActivity(
+      activityHost,
+      {
+        activity: buckets === null || nothing ? null : aggregate(buckets, effectivePricing(), rangeFor(preset, Date.now(), buckets)),
+        progress: activity.progress,
+        preset: activity.preset,
+        empty: nothing
+          ? 'connect ~/.claude or ~/.lci above (or drop a transcript) to see your activity'
+          : buckets === null
+            ? 'reading transcripts…'
+            : null,
+      },
+      {
+        onRange: (p) => {
+          activity.preset = p;
+          renderActivityPage();
+        },
+        onRescan: () => {
+          activity.buckets = null;
+          void collectActivity();
+        },
+      },
+    );
+  }
 
   // ---- controls -----------------------------------------------------------
   zoomOut.addEventListener('click', () => {
@@ -339,14 +523,73 @@ function main(): void {
   });
   byId<HTMLButtonElement>('collapse-all').addEventListener('click', () => trace.collapseAll());
   byId<HTMLButtonElement>('expand-all').addEventListener('click', () => trace.expandAll());
+
+  // Focus mode: only the waterfall (plus its detail pane) stays on screen.
+  const focusBtn = byId<HTMLButtonElement>('focus-toggle');
+  const setFocus = (on: boolean): void => {
+    document.body.classList.toggle('focus', on);
+    focusBtn.textContent = on ? '⤡ exit focus' : '⤢ focus';
+    focusBtn.title = on ? 'show the summary and index again (f)' : 'give the waterfall the whole window (f)';
+    render(false);
+  };
+  focusBtn.addEventListener('click', () => setFocus(!document.body.classList.contains('focus')));
+
   document.addEventListener('keydown', (e) => {
+    const target = e.target as HTMLElement | null;
+    const typing = target !== null && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    if (e.key === 'f' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey && !app.hidden) {
+      e.preventDefault();
+      setFocus(!document.body.classList.contains('focus'));
+      return;
+    }
     if (e.key !== 'Escape') return;
     if (trace.selected !== null) {
       trace.select(null);
     } else if (state.zoomNode !== null) {
       state.zoomNode = null;
       render(true);
+    } else if (document.body.classList.contains('focus')) {
+      setFocus(false);
     }
+  });
+
+  // Draggable divider between the waterfall and the detail pane.
+  const layout = byId<HTMLElement>('trace-layout');
+  const splitter = byId<HTMLElement>('trace-splitter');
+  const DETAIL_KEY = 'seekdeep.detailWidth';
+  const applyDetailWidth = (px: number): void => {
+    const max = Math.max(240, layout.clientWidth - 360);
+    const w = Math.min(max, Math.max(240, Math.round(px)));
+    layout.style.setProperty('--detail-w', `${w}px`);
+  };
+  try {
+    const saved = Number(localStorage.getItem(DETAIL_KEY));
+    if (Number.isFinite(saved) && saved > 0) applyDetailWidth(saved);
+  } catch {
+    // storage unavailable: keep the CSS default
+  }
+  splitter.addEventListener('pointerdown', (down) => {
+    down.preventDefault();
+    splitter.setPointerCapture(down.pointerId);
+    const startX = down.clientX;
+    const startW = detailPane.getBoundingClientRect().width;
+    document.body.classList.add('resizing');
+    const move = (e: PointerEvent): void => applyDetailWidth(startW - (e.clientX - startX));
+    const up = (): void => {
+      splitter.removeEventListener('pointermove', move);
+      splitter.removeEventListener('pointerup', up);
+      splitter.removeEventListener('pointercancel', up);
+      document.body.classList.remove('resizing');
+      try {
+        localStorage.setItem(DETAIL_KEY, String(detailPane.getBoundingClientRect().width));
+      } catch {
+        // storage unavailable
+      }
+      render(false);
+    };
+    splitter.addEventListener('pointermove', move);
+    splitter.addEventListener('pointerup', up);
+    splitter.addEventListener('pointercancel', up);
   });
   let resizeTimer = 0;
   window.addEventListener('resize', () => {

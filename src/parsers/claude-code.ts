@@ -276,6 +276,15 @@ export function parseClaudeCode(text: string, fileName: string): Session {
     }
   }
 
+  // Background Bash calls return at once ("Command running in background
+  // with ID: …") and finish later, when a <task-notification> prompt naming
+  // the tool_use id arrives: that prompt's timestamp is the real end.
+  const notifications = new Map<string, number>();
+  for (const prompt of prompts) {
+    const toolUseId = taskNotification(prompt.text)?.toolUseId;
+    if (toolUseId !== undefined && !notifications.has(toolUseId)) notifications.set(toolUseId, prompt.ts);
+  }
+
   const session = baseSession('claude-code', sessionId ?? fileName, fileName);
   const root = session.root;
   if (recs.length > 0) {
@@ -364,11 +373,15 @@ export function parseClaudeCode(text: string, fileName: string): Session {
     prevModelEnd.set(chainKey, Math.max(prevEnd ?? -Infinity, group.end));
     children.push(modelSpan);
     for (const use of group.toolUses) {
-      children.push(makeTool(use, resultMap.get(use.id)));
+      children.push(makeTool(use, resultMap.get(use.id), notifications.get(use.id)));
     }
     if (!group.sidechain) {
       const parent = turnFor(group.start);
       (parent ?? root).children.push(...children);
+      // A background task outlives its turn; widen the turn like a subagent.
+      if (parent !== null) {
+        for (const c of children) if (c.endMs > parent.endMs) parent.endMs = c.endMs;
+      }
       continue;
     }
     // Sidechain group → its subagent span (created lazily per chain root).
@@ -404,11 +417,47 @@ export function parseClaudeCode(text: string, fileName: string): Session {
   return finishSession(session, warnings);
 }
 
+/** Parsed `<task-notification>` prompt (a background task finishing). */
+export interface TaskNotification {
+  taskId: string;
+  toolUseId?: string;
+  status: string;
+  summary: string;
+}
+
+const NOTIFICATION_RE = /^<task-notification>/;
+
+export function taskNotification(text: string): TaskNotification | null {
+  const t = text.trim();
+  if (!NOTIFICATION_RE.test(t)) return null;
+  const tag = (name: string): string | undefined => {
+    const m = new RegExp(`<${name}>([^<]*)</${name}>`).exec(t);
+    return m?.[1]?.trim();
+  };
+  const taskId = tag('task-id') ?? '';
+  return {
+    taskId,
+    toolUseId: tag('tool-use-id'),
+    status: tag('status') ?? 'completed',
+    summary: tag('summary') ?? '',
+  };
+}
+
+const BACKGROUND_RE = /^Command running in background with ID: (\S+?)\.?(?:\s|$)/;
+
+/** Human name for a turn: the prompt, or "task <status>: <summary>" for notifications. */
+export function turnName(text: string): string {
+  const note = taskNotification(text);
+  if (note === null) return text.length > 0 ? truncate(text, 80) : 'turn';
+  const summary = note.summary.replace(/^Background command\s*/i, '');
+  return truncate(summary.length > 0 ? `task: ${summary}` : `task ${note.status}: ${note.taskId}`, 80);
+}
+
 function makeTurn(prompt: Prompt, activeEnd: number): Span {
   const text = prompt.text.trim();
   return makeSpan(
     'turn',
-    text.length > 0 ? truncate(text, 80) : 'turn',
+    turnName(text),
     prompt.ts,
     Math.max(activeEnd, prompt.ts),
     'root',
@@ -440,16 +489,25 @@ function makeModel(
   );
 }
 
-function makeTool(use: ToolUse, result: ToolResult | undefined): Span {
+function makeTool(use: ToolUse, result: ToolResult | undefined, notifiedAt?: number): Span {
   const start = use.ts;
-  const end =
-    result !== undefined && result.ts >= start ? result.ts : start + 1;
+  let end = result !== undefined && result.ts >= start ? result.ts : start + 1;
+  const background = result === undefined ? null : BACKGROUND_RE.exec(result.text);
+  let meta: Span['meta'];
+  if (background !== null) {
+    meta = { background: true, taskId: background[1] ?? '' };
+    if (notifiedAt !== undefined && notifiedAt > end) {
+      end = notifiedAt;
+      meta.finishedMs = notifiedAt;
+    }
+  }
   return makeSpan('tool', use.name, start, end, null, {
     toolName: use.name,
     toolInput: truncate(use.input),
     ok: result !== undefined ? !result.isError : undefined,
     detail: result !== undefined && result.isError ? truncate(result.text) : undefined,
     payload: buildToolPayload(use, result),
+    meta,
   });
 }
 

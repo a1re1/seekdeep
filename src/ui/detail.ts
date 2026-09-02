@@ -15,6 +15,8 @@ export interface DetailActions {
   select: (span: Span) => void;
   zoom: (span: Span) => void;
   parentOf: (span: Span) => Span | null;
+  /** Open a grafted child-harness session (lci) in its own tab. */
+  openSession?: (span: Span) => void;
 }
 
 export function renderEmptyDetail(pane: HTMLElement): void {
@@ -46,8 +48,20 @@ export function renderDetail(pane: HTMLElement, span: Span, session: Session, ac
       parent !== null
         ? el('button', { type: 'button', onclick: (() => actions.select(parent)) as EventListener }, '↑ parent')
         : null,
+      span.meta?.harness === 'lci' && actions.openSession !== undefined
+        ? el('button', { type: 'button', onclick: (() => actions.openSession?.(span)) as EventListener }, '⧉ open lci session in a tab')
+        : null,
     ),
   );
+  if (span.meta?.harness === 'lci') {
+    pane.append(
+      kv([
+        ['harness', 'lci'],
+        ['session', String(span.meta.lciSessionId ?? '')],
+        ['launched by', String(span.meta.launchedBy ?? '')],
+      ]),
+    );
+  }
 
   switch (span.kind) {
     case 'model':
@@ -158,12 +172,20 @@ function contextItemEl(item: ContextItem): HTMLElement {
 
 function renderTool(pane: HTMLElement, span: Span): void {
   const p = span.payload;
-  pane.append(
-    kv([
-      ['tool', span.toolName ?? span.name],
-      ['status', span.ok === false ? 'failed' : span.ok === true ? 'ok' : 'unknown'],
-    ]),
-  );
+  const rows: Array<[string, string]> = [
+    ['tool', span.toolName ?? span.name],
+    ['status', span.ok === false ? 'failed' : span.ok === true ? 'ok' : 'unknown'],
+  ];
+  if (span.meta?.background === true) {
+    rows.push([
+      'background task',
+      span.meta.finishedMs !== undefined
+        ? `${String(span.meta.taskId ?? '')} · ran ${formatDuration(durationMs(span))} until its notification`
+        : `${String(span.meta.taskId ?? '')} · no completion notification seen`,
+    ]);
+  }
+  if (span.meta?.spawned === 'lci') rows.push(['spawned', 'an lci session (nested below)']);
+  pane.append(kv(rows));
   const input = p?.input ?? span.toolInput;
   pane.append(el('h4', null, 'input'), input !== undefined && input.length > 0 ? pre(input) : el('p', { class: 'muted' }, 'not recorded'));
   pane.append(

@@ -162,9 +162,14 @@ export function renderSummary(
     warnings.textContent = '';
     if (session.warnings.length > 0) {
       warnings.hidden = false;
+      // Collapsed by default: the list can run long and the trace needs the room.
       warnings.append(
-        el('strong', null, `warnings (${session.warnings.length})`),
-        el('ul', null, ...session.warnings.map((w) => el('li', null, w))),
+        el(
+          'details',
+          null,
+          el('summary', null, el('strong', null, `warnings (${session.warnings.length})`)),
+          el('ul', null, ...session.warnings.map((w) => el('li', null, w))),
+        ),
       );
     } else {
       warnings.hidden = true;

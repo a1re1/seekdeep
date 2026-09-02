@@ -84,6 +84,40 @@ describe('claude-code parser', () => {
   });
 });
 
+describe('claude-code background tasks', () => {
+  const T = (s: string) => `2026-08-30T10:${s}Z`;
+  const rec = (o: Record<string, unknown>) => JSON.stringify({ sessionId: 'bg', isSidechain: false, ...o });
+  const usage = { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 };
+  const lines = [
+    rec({ type: 'user', uuid: 'u1', parentUuid: null, timestamp: T('00:00.000'), message: { role: 'user', content: 'build it with lci' } }),
+    rec({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', timestamp: T('00:01.000'), message: { id: 'm1', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'tool_use', id: 'tl', name: 'Bash', input: { command: 'lci --goal-file goal.md', run_in_background: true } }], stop_reason: 'tool_use', usage } }),
+    rec({ type: 'user', uuid: 'u2', parentUuid: 'a1', timestamp: T('00:02.000'), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tl', content: 'Command running in background with ID: task9. Output is being written to: /tmp/x/tasks/task9.output.' }] } }),
+    rec({ type: 'assistant', uuid: 'a2', parentUuid: 'u2', timestamp: T('00:03.000'), message: { id: 'm2', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'text', text: 'waiting' }], stop_reason: 'end_turn', usage } }),
+    rec({ type: 'user', uuid: 'u3', parentUuid: 'a2', timestamp: T('12:00.000'), message: { role: 'user', content: '<task-notification>\n<task-id>task9</task-id>\n<tool-use-id>tl</tool-use-id>\n<status>completed</status>\n<summary>Background command "Run lci on the goal" completed (exit code 0)</summary>\n</task-notification>' } }),
+    rec({ type: 'assistant', uuid: 'a3', parentUuid: 'u3', timestamp: T('12:01.000'), message: { id: 'm3', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage } }),
+  ].join('\n');
+
+  test('a backgrounded Bash call runs until its task-notification prompt', () => {
+    const s = parseTranscript(lines, 'bg.jsonl');
+    const tool = byKind(s.root, 'tool')[0]!;
+    expect(tool.startMs).toBe(ms(T('00:01.000')));
+    expect(tool.endMs).toBe(ms(T('12:00.000')));
+    expect(tool.meta?.background).toBe(true);
+    expect(tool.meta?.taskId).toBe('task9');
+    // the launching turn widens to cover it, like a subagent would
+    const turns = byKind(s.root, 'turn');
+    expect(turns[0]!.endMs).toBe(ms(T('12:00.000')));
+    expect(s.warnings.filter((w) => w.includes('clamped'))).toHaveLength(0);
+  });
+
+  test('task-notification turns are named from their summary', () => {
+    const s = parseTranscript(lines, 'bg.jsonl');
+    const names = byKind(s.root, 'turn').map((t) => t.name);
+    expect(names[0]).toBe('build it with lci');
+    expect(names[1]).toBe('task: "Run lci on the goal" completed (exit code 0)');
+  });
+});
+
 describe('claude-code parallel subagents', () => {
   test('newContext is tracked per subagent chain, not per sidechain flag', () => {
     const T = (s: string) => `2026-08-30T10:00:${s}Z`;
