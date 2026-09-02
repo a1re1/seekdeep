@@ -59,18 +59,36 @@ export const DEFAULT_PRICING: PricingTable = {
   'gpt-oss-120b': otherRow(0.15, 0.6),
 };
 
+/** `.` and `-` are equivalent in table keys and model names (glm-5.3-flash ≡ glm-5-3-flash). */
+const canon = (s: string): string => s.replace(/\./g, '-');
+
+/** Model name without a `provider/` prefix: `z-ai/glm-5.3-flash` → `glm-5.3-flash`. */
+const bareModel = (model: string): string => {
+  const slash = model.lastIndexOf('/');
+  return slash >= 0 ? model.slice(slash + 1) : model;
+};
+
 /**
  * Longest-prefix match: `claude-opus-4-6-20260101` resolves to the
- * `claude-opus-4-6` row. Exact keys win over prefixes at equal length.
+ * `claude-opus-4-6` row. A `provider/` prefix on the model name is ignored
+ * when matching (`anthropic/claude-opus-5` → `claude-opus-5`), and `.` and
+ * `-` are treated as equivalent (`glm-5-3-flash` matches key `glm-5.3-flash`).
  */
-export function priceFor(model: string): PriceRow | null {
+function lookup(table: PricingTable, model: string): PriceRow | null {
+  const candidates = [canon(model), canon(bareModel(model))];
   let best: string | null = null;
-  for (const key of Object.keys(DEFAULT_PRICING)) {
-    if (model === key || model.startsWith(key)) {
+  for (const key of Object.keys(table)) {
+    const ck = canon(key);
+    if (candidates.some((c) => c === ck || c.startsWith(ck))) {
       if (best === null || key.length > best.length) best = key;
     }
   }
-  return best !== null ? DEFAULT_PRICING[best]! : null;
+  return best !== null ? table[best]! : null;
+}
+
+/** Longest-prefix match against `table` (default: the built-in table; see `lookup`). */
+export function priceFor(model: string, table: PricingTable = DEFAULT_PRICING): PriceRow | null {
+  return lookup(table, model);
 }
 
 const PER = 1_000_000;
@@ -81,8 +99,8 @@ const PER = 1_000_000;
  * Plain `cacheWrite` tokens not broken out by 5m/1h are charged at the
  * 5m rate; explicit `cacheWrite5m`/`cacheWrite1h` are charged at theirs.
  */
-export function costOf(usage: Usage, model: string): number {
-  const row = priceFor(model);
+export function costOf(usage: Usage, model: string, table: PricingTable = DEFAULT_PRICING): number {
+  const row = priceFor(model, table);
   if (row === null) return 0;
   const input = usage.input || 0;
   const cacheRead = usage.cacheRead || 0;
@@ -132,16 +150,6 @@ export function applyPricing(session: Session, table: PricingTable): void {
     return total;
   };
   rollup(session.root);
-}
-
-function lookup(table: PricingTable, model: string): PriceRow | null {
-  let best: string | null = null;
-  for (const key of Object.keys(table)) {
-    if (model === key || model.startsWith(key)) {
-      if (best === null || key.length > best.length) best = key;
-    }
-  }
-  return best !== null ? table[best]! : null;
 }
 
 function costWith(row: PriceRow, usage: Usage): number {

@@ -10,6 +10,10 @@
   <header>
     <h1>seekdeep</h1>
     <span class="tagline">trace viewer for agent transcripts — static, local, no telemetry</span>
+    <nav id="page-nav" class="page-nav" aria-label="pages">
+      <button id="nav-trace" type="button" class="active" title="transcript waterfalls">trace</button>
+      <button id="nav-activity" type="button" title="usage across models and time">activity</button>
+    </nav>
     <section id="drop-zone" tabindex="0">
       <strong>drop JSONL transcripts here</strong>
       <label class="button"><input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" />choose files…</label>
@@ -74,14 +78,18 @@
       <div id="tooltip" class="tooltip" hidden></div>
     </section>
 
+  </main>
+
+  <section id="activity" hidden>
+    <div id="activity-host"></div>
     <section id="pricing-section">
       <details>
-        <summary>pricing editor <span class="hint">(USD per 1M tokens, saved to localStorage)</span></summary>
+        <summary>pricing editor <span class="hint">(USD per 1M tokens, saved to localStorage — charts and costs re-price instantly)</span></summary>
         <div id="pricing-table"></div>
         <button id="pricing-reset" type="button">reset to defaults</button>
       </details>
     </section>
-  </main>
+  </section>
 
   <script type="module" src="./main.js"></script>
 </body>

@@ -456,6 +456,69 @@ canvas { flex: none; display: block; width: 100%; height: 48px; border-radius: 4
 #pricing-section > details > summary { cursor: pointer; color: var(--muted); font-size: 0.82rem; }
 #pricing-table { max-height: 40vh; overflow: auto; }
 
+/* ---- page nav + activity dashboard ------------------------------------ */
+
+.page-nav { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.page-nav button { border: none; border-radius: 0; padding: 0.2rem 0.8rem; font-size: 0.85rem; background: var(--panel); }
+.page-nav button + button { border-left: 1px solid var(--border); }
+.page-nav button.active { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--accent); }
+
+#activity { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 0.75rem; }
+#activity[hidden] { display: none; }
+.activity-toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.activity-head { display: flex; align-items: baseline; gap: 0.75rem; flex: 1 1 auto; }
+.activity-head h2 { margin: 0; font-size: 1.1rem; }
+.activity-status { font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.activity-toolbar select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font: inherit;
+  padding: 0.25rem 0.5rem;
+}
+.activity-empty { margin: 0.5rem 0; }
+
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.6rem; }
+.stat-card {
+  display: grid;
+  grid-template-columns: 1fr 5.5rem;
+  grid-template-areas: "label spark" "value spark" "delta spark";
+  gap: 0 0.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.8rem;
+}
+.stat-label { grid-area: label; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-value { grid-area: value; font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.stat-delta { grid-area: delta; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.stat-delta.good { color: #16a34a; }
+.stat-delta.bad { color: #dc2626; }
+.stat-vs { font-size: 0.75rem; }
+.sparkline { grid-area: spark; align-self: center; width: 100%; height: 34px; }
+.sparkline-line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.sparkline-area { fill: color-mix(in srgb, var(--accent) 22%, transparent); }
+
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+@media (max-width: 900px) { .chart-grid { grid-template-columns: minmax(0, 1fr); } }
+.chart-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; min-width: 0; }
+.chart-panel h3 { margin: 0 0 0.4rem; font-size: 0.9rem; font-weight: 600; }
+.chart { display: block; width: 100%; height: auto; }
+.chart-gridline { stroke: var(--border); stroke-dasharray: 2 3; }
+.chart-label { fill: var(--muted); font-size: 11px; font-family: ui-sans-serif, system-ui, sans-serif; }
+.chart rect:hover { opacity: 0.8; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; margin-top: 0.4rem; font-size: 0.78rem; color: var(--muted); }
+.legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.legend-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+.activity-table-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.6rem; overflow-x: auto; }
+.activity-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.activity-table th, .activity-table td { padding: 0.25rem 0.5rem; text-align: right; border-bottom: 1px solid var(--border); }
+.activity-table th { color: var(--muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.activity-table th:first-child, .activity-table td:first-child, .activity-table th:nth-child(2), .activity-table td:nth-child(2) { text-align: left; }
+.activity-table tr:last-child td { border-bottom: none; }
+
 /* Focus mode: nothing but the waterfall and its detail pane. */
 body.focus > :not(#app), body.focus #summary-panel, body.focus #pricing-section, body.focus #session-tabs { display: none; }
 body.focus { padding: 0.4rem; }

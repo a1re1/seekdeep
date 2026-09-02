@@ -2,6 +2,7 @@
 // pane + cache trace, summary panel, pricing editor. All state lives in the
 // browser; nothing is uploaded anywhere.
 
+import { clearActivityCache, collectBuckets } from './index/activity-cache.ts';
 import { clearScanCache, scanWithCache } from './index/cache.ts';
 import { forgetDirectory, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
 import type { SourceFile, SourceKind } from './index/fs.ts';
@@ -20,6 +21,9 @@ import { renderDetail, renderEmptyDetail } from './ui/detail.ts';
 import { byId, el, sizeCanvas } from './ui/dom.ts';
 import { readFiles } from './ui/loader.ts';
 import { renderPricingEditor } from './ui/pricing.ts';
+import { renderActivity } from './ui/activity-view.ts';
+import { aggregate, bucketSession, mergeBuckets, rangeFor } from './stats.ts';
+import type { UsageBucket } from './stats.ts';
 import { renderSummary, summarize } from './ui/summary.ts';
 import { TraceView } from './ui/trace.ts';
 
@@ -55,6 +59,16 @@ function main(): void {
 
   const trace = new TraceView(traceHost, tooltip);
   state.trace = trace;
+
+  // Activity page state (declared early: scans and drops invalidate it).
+  const activity = {
+    page: 'trace' as 'trace' | 'activity',
+    preset: '48h',
+    buckets: null as UsageBucket[] | null, // null until the first collection
+    collecting: false,
+    progress: null as string | null,
+  };
+
   trace.onSelect = (span) => renderDetailFor(span);
   trace.onZoom = (span) => zoomTo(span);
 
@@ -172,11 +186,13 @@ function main(): void {
     renderIndexPanel();
     // Sessions opened before this source was connected can now be grafted.
     for (const loaded of state.sessions) void graftLciChildren(loaded);
+    activity.buckets = null; // re-collect (cache hits make it cheap) next time the page shows
+    if (activity.page === 'activity') void collectActivity();
   }
 
   async function forgetSource(kind: SourceKind): Promise<void> {
     try {
-      await Promise.all([forgetDirectory(kind), clearScanCache(kind)]);
+      await Promise.all([forgetDirectory(kind), clearScanCache(kind), clearActivityCache(kind)]);
     } catch (err) {
       setStatus(`failed to forget directory: ${err instanceof Error ? err.message : String(err)}`, true);
     }
@@ -185,6 +201,8 @@ function main(): void {
     index.filter = '';
     rebuildIndex();
     renderIndexPanel();
+    activity.buckets = null; // that source's usage must leave the page too
+    if (activity.page === 'activity') void collectActivity();
   }
 
   async function openEntry(entry: SessionEntry): Promise<void> {
@@ -252,6 +270,8 @@ function main(): void {
     state.sessions.push(loaded);
     state.active = state.sessions.length - 1;
     state.zoomNode = null;
+    activity.buckets = null; // a dropped transcript may add usage the index lacks
+    showPage('trace');
     renderTabs();
     indexPanel.open = false; // the index yields to the trace; reopen it from its header
     render(true);
@@ -406,11 +426,94 @@ function main(): void {
   // ---- pricing (re-applies to all sessions, refreshes summary + detail) ---
   renderPricingEditor(byId<HTMLElement>('pricing-table'), effectivePricing(), (table) => {
     for (const { session } of state.sessions) applyPricing(session, table);
+    renderActivityPage(); // charts re-price from the cached buckets, no rescan
     const loaded = current();
     if (loaded === undefined) return;
     renderSummary(byId<HTMLElement>('summary-panel'), loaded.session, summarize(loaded.session.root));
     if (trace.selected !== null) renderDetailFor(trace.selected);
   });
+
+  // ---- activity page ------------------------------------------------------
+  const activitySection = byId<HTMLElement>('activity');
+  const activityHost = byId<HTMLElement>('activity-host');
+  const navTrace = byId<HTMLButtonElement>('nav-trace');
+  const navActivity = byId<HTMLButtonElement>('nav-activity');
+
+  function showPage(page: 'trace' | 'activity'): void {
+    activity.page = page;
+    navTrace.classList.toggle('active', page === 'trace');
+    navActivity.classList.toggle('active', page === 'activity');
+    activitySection.hidden = page !== 'activity';
+    if (page === 'activity') {
+      renderActivityPage();
+      if (activity.buckets === null) void collectActivity();
+    } else {
+      render(false);
+    }
+  }
+  navTrace.addEventListener('click', () => showPage('trace'));
+  navActivity.addEventListener('click', () => showPage('activity'));
+
+  /** Index entries plus sessions that were dropped in and are not in the index. */
+  function activitySources(): { entries: SessionEntry[]; extra: Session[] } {
+    const entries = [...index.entries.claude, ...index.entries.lci];
+    const known = new Set(entries.map((e) => e.id));
+    const extra = state.sessions.map((l) => l.session).filter((s) => !known.has(s.id));
+    return { entries, extra };
+  }
+
+  async function collectActivity(): Promise<void> {
+    if (activity.collecting) return;
+    const { entries, extra } = activitySources();
+    activity.collecting = true;
+    activity.progress = entries.length > 0 ? `reading 0 / ${entries.length} transcripts` : null;
+    renderActivityPage();
+    try {
+      const indexed = await collectBuckets(entries, (done, total) => {
+        activity.progress = `reading ${done} / ${total} transcripts`;
+        renderActivityPage();
+      });
+      activity.buckets = mergeBuckets([indexed, ...extra.map(bucketSession)]);
+    } catch (err) {
+      setStatus(`failed to read transcripts: ${err instanceof Error ? err.message : String(err)}`, true);
+      activity.buckets ??= [];
+    } finally {
+      activity.collecting = false;
+      activity.progress = null;
+      renderActivityPage();
+    }
+  }
+
+  function renderActivityPage(): void {
+    if (activity.page !== 'activity') return;
+    const { entries, extra } = activitySources();
+    const nothing = entries.length === 0 && extra.length === 0;
+    const preset = activity.preset as '48h' | '7d' | '30d' | 'all';
+    const buckets = activity.buckets;
+    renderActivity(
+      activityHost,
+      {
+        activity: buckets === null || nothing ? null : aggregate(buckets, effectivePricing(), rangeFor(preset, Date.now(), buckets)),
+        progress: activity.progress,
+        preset: activity.preset,
+        empty: nothing
+          ? 'connect ~/.claude or ~/.lci above (or drop a transcript) to see your activity'
+          : buckets === null
+            ? 'reading transcripts…'
+            : null,
+      },
+      {
+        onRange: (p) => {
+          activity.preset = p;
+          renderActivityPage();
+        },
+        onRescan: () => {
+          activity.buckets = null;
+          void collectActivity();
+        },
+      },
+    );
+  }
 
   // ---- controls -----------------------------------------------------------
   zoomOut.addEventListener('click', () => {

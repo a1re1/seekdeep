@@ -13,6 +13,15 @@ describe('priceFor', () => {
     expect(priceFor('gpt-5-codex')?.input).toBe(1.25);
     expect(priceFor('gpt-5-mini')?.input).toBe(0.25); // not the shorter 'gpt-5'
   });
+  test('provider-prefixed model names fall back to the bare name', () => {
+    expect(priceFor('anthropic/claude-opus-5')).toEqual(DEFAULT_PRICING['claude-opus-5']!);
+    expect(priceFor('z-ai/glm-5.3-flash')).toEqual(DEFAULT_PRICING['glm-5.3-flash']!);
+    expect(priceFor('openai/gpt-5-mini')?.input).toBe(0.25); // not the shorter 'gpt-5'
+  });
+  test('`.` and `-` are equivalent in keys and model names', () => {
+    expect(priceFor('glm-5-3-flash')).toEqual(DEFAULT_PRICING['glm-5.3-flash']!);
+    expect(priceFor('glm-5.3-flash-20260101')).toEqual(DEFAULT_PRICING['glm-5.3-flash']!);
+  });
   test('unknown model → null', () => {
     expect(priceFor('totally-unknown-model')).toBeNull();
   });

@@ -206,14 +206,18 @@ async function hasReadPermission(handle: FsDirHandle): Promise<boolean> {
 
 export function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('seekdeep', 1);
+    const req = indexedDB.open('seekdeep', 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('dirs')) db.createObjectStore('dirs');
       if (!db.objectStoreNames.contains('scan')) db.createObjectStore('scan');
+      if (!db.objectStoreNames.contains('activity')) db.createObjectStore('activity');
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('indexedDB: open failed'));
+    // Another tab still on the old schema keeps the upgrade waiting; fail
+    // fast (callers degrade to a plain rescan) instead of stalling boot.
+    req.onblocked = () => reject(new Error('indexedDB: upgrade blocked by another open tab'));
   });
 }
 
