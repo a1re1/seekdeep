@@ -207,15 +207,16 @@ function buildCharts(activity: Activity | null): HTMLElement {
 }
 
 /** Per-model cost/requests series, in the activity's model order. */
-function modelSeries(
-  activity: Activity,
+export function modelSeries(
+  activity: Pick<Activity, 'models' | 'series'>,
   pick: (series: Activity['series']) => number[][],
 ): Array<{ key: string; name: string; color: string; values: number[] }> {
+  const rows = pick(activity.series); // [modelIndex][columnIndex]
   return activity.models.map((model, i) => ({
     key: `${model}:${i}`,
     name: model,
     color: PALETTE[i % PALETTE.length] ?? '#6b7280',
-    values: pick(activity.series).map((arr) => arr[i] ?? 0),
+    values: rows[i] ?? [],
   }));
 }
 
