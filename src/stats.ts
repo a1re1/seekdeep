@@ -17,6 +17,8 @@ export interface UsageBucket {
   hourMs: number;
   model: string;
   provider?: string;
+  /** Harness that made the calls (claude, lci, codex, …); absent on records cached before it existed. */
+  harness?: string;
   requests: number;
   input: number;
   cacheRead: number;
@@ -98,16 +100,19 @@ export interface Activity {
  */
 export function bucketSession(session: Session): UsageBucket[] {
   const byKey = new Map<string, UsageBucket>();
+  const own = harnessOf(session.format);
   for (const span of flatten(session.root)) {
     if (span.kind !== 'model' || !span.usage) continue;
     const hourMs = Math.floor(span.startMs / HOUR_MS) * HOUR_MS;
     const model = span.model ?? '';
-    const key = `${hourMs}\u0000${model}`;
+    const harness = typeof span.meta?.harness === 'string' ? span.meta.harness : own;
+    const key = bucketKey(hourMs, model, harness);
     let bucket = byKey.get(key);
     if (bucket === undefined) {
       bucket = {
         hourMs,
         model,
+        harness,
         requests: 0,
         input: 0,
         cacheRead: 0,
@@ -137,17 +142,27 @@ export function bucketSession(session: Session): UsageBucket[] {
   return [...byKey.values()];
 }
 
-/** Sum bucket lists by (hourMs, model); result sorted by hour then model. */
+/** The harness label shown in the activity filter for a transcript format. */
+export function harnessOf(format: Session['format']): string {
+  return format === 'claude-code' ? 'claude' : format;
+}
+
+function bucketKey(hourMs: number, model: string, harness: string | undefined): string {
+  return `${hourMs}\u0000${model}\u0000${harness ?? ''}`;
+}
+
+/** Sum bucket lists by (hourMs, model, harness); result sorted by hour then model. */
 export function mergeBuckets(lists: UsageBucket[][]): UsageBucket[] {
   const byKey = new Map<string, UsageBucket>();
   for (const list of lists) {
     for (const b of list) {
-      const key = `${b.hourMs}\u0000${b.model}`;
+      const key = bucketKey(b.hourMs, b.model, b.harness);
       let bucket = byKey.get(key);
       if (bucket === undefined) {
         bucket = {
           hourMs: b.hourMs,
           model: b.model,
+          ...(b.harness !== undefined ? { harness: b.harness } : {}),
           requests: 0,
           input: 0,
           cacheRead: 0,

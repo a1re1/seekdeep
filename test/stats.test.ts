@@ -36,6 +36,7 @@ describe('bucketSession', () => {
     const opus = buckets[0]!;
     expect(opus.hourMs).toBe(Math.floor(t / HOUR) * HOUR);
     expect(opus.requests).toBe(2);
+    expect(buckets.every((b) => typeof b.harness === 'string' && b.harness.length > 0)).toBe(true);
     expect(opus.input).toBe(11);
     expect(opus.cacheRead).toBe(300);
     expect(opus.output).toBe(50);
@@ -108,6 +109,18 @@ describe('aggregate', () => {
     expect(a.totals.costUsd).toBeCloseTo(6, 6);
     expect(a.totals.requests).toBe(4);
     expect(a.sparkline.costUsd).toHaveLength(48);
+  });
+
+  test('buckets carry their harness and merge keeps harnesses apart', () => {
+    const lists = [
+      [bucket(h, 'claude-opus-5', { input: 10 })],
+      [{ ...bucket(h, 'claude-opus-5', { input: 5 }), harness: 'lci' }],
+      [{ ...bucket(h, 'claude-opus-5', { input: 1 }), harness: 'lci' }],
+    ];
+    const merged = mergeBuckets(lists);
+    expect(merged).toHaveLength(2);
+    expect(merged.find((b) => b.harness === 'lci')?.input).toBe(6);
+    expect(merged.find((b) => b.harness === undefined)?.input).toBe(10);
   });
 
   test('token volume counts reasoning inside output, not on top of it', () => {

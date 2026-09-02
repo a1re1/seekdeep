@@ -11,12 +11,17 @@ export interface ActivityModel {
   /** Progress line shown while transcripts are being read, or null. */
   progress: string | null;
   preset: string;
+  /** Harnesses present in the data (claude, lci, …); the filter offers All plus each of these. */
+  harnesses: string[];
+  /** Selected harness, or null for all. */
+  harness: string | null;
   /** Shown instead of the dashboard when there is nothing to aggregate. */
   empty: string | null;
 }
 
 export interface ActivityActions {
   onRange(preset: string): void;
+  onHarness(harness: string | null): void;
   onRescan(): void;
 }
 
@@ -97,8 +102,28 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   const status = document.createElement('span');
   status.className = 'footnote activity-status';
   status.textContent = model.progress ?? '';
-  toolbar.append(title, subtitle, spacer, status, selectWrap, rescan);
+  toolbar.append(title, subtitle, spacer, status);
+  if (model.harnesses.length > 0) toolbar.append(harnessSeg(model, actions));
+  toolbar.append(selectWrap, rescan);
   return toolbar;
+}
+
+/** All | claude | lci | … — filters every card, chart and table row by harness. */
+function harnessSeg(model: ActivityModel, actions: ActivityActions): HTMLElement {
+  const seg = document.createElement('nav');
+  seg.className = 'vt-seg';
+  seg.id = 'activity-harness';
+  seg.setAttribute('aria-label', 'filter by harness');
+  const options: Array<[string | null, string]> = [[null, 'All'], ...model.harnesses.map((h): [string, string] => [h, h])];
+  for (const [value, label] of options) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.setAttribute('aria-pressed', model.harness === value ? 'true' : 'false');
+    button.addEventListener('click', () => actions.onHarness(value));
+    seg.append(button);
+  }
+  return seg;
 }
 
 // ---- headline cards ----------------------------------------------------------

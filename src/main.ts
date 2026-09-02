@@ -73,6 +73,7 @@ function main(): void {
   const activity = {
     page: 'trace' as Page,
     preset: '48h',
+    harness: null as string | null, // null = every harness
     buckets: null as UsageBucket[] | null, // null until the first collection
     collecting: false,
     progress: null as string | null,
@@ -588,13 +589,18 @@ function main(): void {
     const { entries, extra } = activitySources();
     const nothing = entries.length === 0 && extra.length === 0;
     const preset = activity.preset as '48h' | '7d' | '30d' | 'all';
-    const buckets = activity.buckets;
+    const all = activity.buckets;
+    const harnesses = all === null ? [] : [...new Set(all.map((b) => b.harness ?? 'other'))].sort();
+    if (activity.harness !== null && !harnesses.includes(activity.harness)) activity.harness = null; // e.g. that source was forgotten
+    const buckets = all === null || activity.harness === null ? all : all.filter((b) => (b.harness ?? 'other') === activity.harness);
     renderActivity(
       activityHost,
       {
         activity: buckets === null || nothing ? null : aggregate(buckets, effectivePricing(), rangeFor(preset, Date.now(), buckets)),
         progress: activity.progress,
         preset: activity.preset,
+        harnesses,
+        harness: activity.harness,
         empty: nothing
           ? 'Connect ~/.claude or ~/.lci from the session picker (or drop a transcript) to see your activity.'
           : buckets === null
@@ -604,6 +610,10 @@ function main(): void {
       {
         onRange: (p) => {
           activity.preset = p;
+          renderActivityPage();
+        },
+        onHarness: (h) => {
+          activity.harness = h;
           renderActivityPage();
         },
         onRescan: () => {
