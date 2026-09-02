@@ -384,7 +384,7 @@ function main(): void {
       app.hidden = true;
       return;
     }
-    app.hidden = false;
+    app.hidden = activity.page !== 'trace'; // the activity page replaces the trace, it does not sit on top
     const sessionRoot = loaded.session.root;
     const root = state.zoomNode ?? sessionRoot;
 
@@ -444,6 +444,7 @@ function main(): void {
     navTrace.classList.toggle('active', page === 'trace');
     navActivity.classList.toggle('active', page === 'activity');
     activitySection.hidden = page !== 'activity';
+    app.hidden = page !== 'trace' || current() === undefined;
     if (page === 'activity') {
       renderActivityPage();
       if (activity.buckets === null) void collectActivity();
