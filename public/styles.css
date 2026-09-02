@@ -745,3 +745,16 @@ body.focus .content { padding: 8px; }
   .pricing-grid { grid-template-columns: minmax(0, 1fr) repeat(5, 80px); }
   .pricing-input { width: 80px; }
 }
+
+/* ---- activity chart hover ------------------------------------------------ */
+
+.chart-tooltip { min-width: 12rem; }
+.chart-tooltip-title { font-weight: var(--weight-semibold); font-family: var(--font-mono); font-size: var(--text-caption); }
+.chart-tooltip-line { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.chart rect { transition: opacity var(--dur-fast) var(--ease-out); }
+.chart-h { height: auto; }
+.chart-htrack { fill: var(--surface-inset); }
+.chart-hrow { cursor: default; }
+.chart-hrow:hover rect:not(.chart-htrack) { opacity: 0.8; }
+.chart-hlabel { font-family: var(--font-mono); fill: var(--text-secondary); }
+.chart-hvalue { fill: var(--text-primary); font-variant-numeric: tabular-nums; }

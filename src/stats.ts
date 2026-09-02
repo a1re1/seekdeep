@@ -77,7 +77,8 @@ export interface Activity {
   delta: Delta;
   columns: number[];
   models: string[];
-  series: { costUsd: number[][]; requests: number[][] };
+  /** Per model (in `models` order) × per column: cost, request count, prompt+output tokens. */
+  series: { costUsd: number[][]; requests: number[][]; tokens: number[][] };
   tokens: { prompt: number[]; completion: number[]; reasoning: number[] };
   caching: { cached: number[]; uncached: number[] };
   sparkline: {
@@ -267,6 +268,8 @@ interface ModelAcc {
   provider?: string;
   cost: number[];
   requests: number[];
+  /** prompt + output tokens per column */
+  tokensByCol: number[];
   requestsTotal: number;
   promptTokens: number;
   outputTokens: number;
@@ -338,6 +341,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
         provider: b.provider,
         cost: new Array<number>(nCols).fill(0),
         requests: new Array<number>(nCols).fill(0),
+        tokensByCol: new Array<number>(nCols).fill(0),
         requestsTotal: 0,
         promptTokens: 0,
         outputTokens: 0,
@@ -351,6 +355,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
     if (acc.provider === undefined && b.provider !== undefined) acc.provider = b.provider;
     acc.cost[idx] = (acc.cost[idx] ?? 0) + cost;
     acc.requests[idx] = (acc.requests[idx] ?? 0) + b.requests;
+    acc.tokensByCol[idx] = (acc.tokensByCol[idx] ?? 0) + prompt + b.output;
     acc.requestsTotal += b.requests;
     acc.promptTokens += prompt;
     acc.outputTokens += b.output;
@@ -369,6 +374,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
   const series = {
     costUsd: models.map((m) => accs.get(m)!.cost),
     requests: models.map((m) => accs.get(m)!.requests),
+    tokens: models.map((m) => accs.get(m)!.tokensByCol),
   };
 
   const sparkTokens = tokens.prompt.map((p, i) => p + tokens.completion[i]! + tokens.reasoning[i]!);

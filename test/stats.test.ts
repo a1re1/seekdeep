@@ -103,6 +103,8 @@ describe('aggregate', () => {
     expect(col).toBeGreaterThan(0);
     expect(a.series.costUsd[0]![col]).toBeCloseTo(5, 6);
     expect(a.series.requests[0]![col]).toBe(3);
+    expect(a.series.tokens[0]![col]).toBe(1_000_000);
+    expect(a.series.tokens[1]![a.columns.indexOf(h - 5 * HOUR)]).toBe(1_000_000);
     expect(a.totals.costUsd).toBeCloseTo(6, 6);
     expect(a.totals.requests).toBe(4);
     expect(a.sparkline.costUsd).toHaveLength(48);

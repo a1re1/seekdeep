@@ -190,6 +190,11 @@ function buildCharts(activity: Activity | null): HTMLElement {
       series: modelSeries(activity, (s) => s.requests),
     },
     {
+      title: 'Token breakdown by model',
+      columns: activity.columns,
+      series: modelSeries(activity, (s) => s.tokens),
+    },
+    {
       title: 'Token breakdown',
       columns: activity.columns,
       series: [
@@ -207,15 +212,130 @@ function buildCharts(activity: Activity | null): HTMLElement {
       ],
     },
   ];
+  const tip = chartTooltip(grid);
   for (const spec of charts) {
     const panel = document.createElement('div');
     panel.className = 'card chart-panel';
     const h = document.createElement('h3');
     h.textContent = spec.title;
-    panel.append(h, stackedBars(spec.columns, spec.series, { unit: spec.unit, format: spec.unit === '$' ? formatCost : formatCount }), legendRow(spec.series));
+    panel.append(
+      h,
+      stackedBars(spec.columns, spec.series, { unit: spec.unit, format: spec.unit === '$' ? formatCost : formatCount, tooltip: tip }),
+      legendRow(spec.series),
+    );
     grid.append(panel);
   }
+  // Spend per model: one horizontal bar per model so the ranking reads at a glance.
+  const spend = document.createElement('div');
+  spend.className = 'card chart-panel';
+  const spendTitle = document.createElement('h3');
+  spendTitle.textContent = 'Spend per model';
+  const colors = new Map(modelSeries(activity, (s) => s.costUsd).map((m) => [m.name, m.color]));
+  spend.append(
+    spendTitle,
+    horizontalBars(
+      activity.perModel.map((row) => ({
+        name: row.model,
+        color: colors.get(row.model) ?? 'var(--text-tertiary)',
+        value: row.costUsd,
+        detail: `${formatCount(row.requests)} requests · ${formatCount(row.tokens)} tokens`,
+      })),
+      { format: formatCost, tooltip: tip },
+    ),
+  );
+  grid.append(spend);
   return grid;
+}
+
+// ---- hover tooltip -------------------------------------------------------------
+
+export interface ChartTooltip {
+  show(lines: string[], e: MouseEvent): void;
+  move(e: MouseEvent): void;
+  hide(): void;
+}
+
+/** One floating tooltip shared by every chart in `host`, positioned near the pointer. */
+function chartTooltip(host: HTMLElement): ChartTooltip {
+  const node = document.createElement('div');
+  node.className = 'tooltip chart-tooltip';
+  node.hidden = true;
+  host.append(node);
+  const move = (e: MouseEvent): void => {
+    const pad = 14;
+    const w = node.offsetWidth;
+    const h = node.offsetHeight;
+    let x = e.clientX + pad;
+    let y = e.clientY + pad;
+    if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+    if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+    node.style.left = `${Math.max(4, x)}px`;
+    node.style.top = `${Math.max(4, y)}px`;
+  };
+  return {
+    show: (lines, e) => {
+      node.replaceChildren();
+      lines.forEach((line, i) => {
+        const row = document.createElement('div');
+        row.className = i === 0 ? 'chart-tooltip-title' : 'chart-tooltip-line';
+        row.textContent = line;
+        node.append(row);
+      });
+      node.hidden = false;
+      move(e);
+    },
+    move,
+    hide: () => {
+      node.hidden = true;
+    },
+  };
+}
+
+function attachHover(target: Element, lines: () => string[], tip: ChartTooltip | undefined): void {
+  if (tip === undefined) return;
+  target.addEventListener('mouseenter', (e) => tip.show(lines(), e as MouseEvent));
+  target.addEventListener('mousemove', (e) => tip.move(e as MouseEvent));
+  target.addEventListener('mouseleave', () => tip.hide());
+}
+
+/**
+ * Horizontal bars, one per row in the given order, label on the left and the
+ * formatted value at the bar's end. Builds SVG; no other state.
+ */
+export function horizontalBars(
+  rows: Array<{ name: string; color: string; value: number; detail?: string }>,
+  opts: { format?: (v: number) => string; tooltip?: ChartTooltip } = {},
+): SVGElement {
+  const format = opts.format ?? formatCount;
+  const W = 640;
+  const ROW = 24;
+  const M = { top: 4, right: 64, bottom: 4, left: 168 };
+  const H = M.top + M.bottom + Math.max(1, rows.length) * ROW;
+  const svg = svgEl('svg', { class: 'chart chart-h', viewBox: `0 0 ${W} ${H}`, width: '100%' });
+  if (rows.length === 0) return svg;
+  const max = Math.max(...rows.map((r) => r.value), 0) || 1;
+  const total = rows.reduce((a, r) => a + r.value, 0);
+  const plotW = W - M.left - M.right;
+  rows.forEach((row, i) => {
+    const y = M.top + i * ROW;
+    const w = Math.max(row.value > 0 ? 1 : 0, (row.value / max) * plotW);
+    const group = svgEl('g', { class: 'chart-hrow' });
+    const label = svgEl('text', { x: M.left - 8, y: y + ROW / 2 + 4, class: 'chart-label chart-hlabel', 'text-anchor': 'end' });
+    label.textContent = row.name.length > 26 ? `${row.name.slice(0, 25)}…` : row.name;
+    const track = svgEl('rect', { x: M.left, y: y + 5, width: plotW, height: ROW - 10, rx: 4, class: 'chart-htrack' });
+    const bar = svgEl('rect', { x: M.left, y: y + 5, width: w, height: ROW - 10, rx: 4 });
+    (bar as SVGElement & { style: CSSStyleDeclaration }).style.fill = row.color;
+    const value = svgEl('text', { x: M.left + w + 6, y: y + ROW / 2 + 4, class: 'chart-label chart-hvalue' });
+    value.textContent = format(row.value);
+    group.append(label, track, bar, value);
+    attachHover(
+      group,
+      () => [row.name, `${format(row.value)}${total > 0 ? ` · ${((row.value / total) * 100).toFixed(1)}% of total` : ''}`, ...(row.detail !== undefined ? [row.detail] : [])],
+      opts.tooltip,
+    );
+    svg.append(group);
+  });
+  return svg;
 }
 
 /** Per-model cost/requests series, in the activity's model order. */
@@ -239,7 +359,7 @@ export function modelSeries(
 export function stackedBars(
   columns: number[],
   seriesByKey: Array<{ key: string; name: string; color: string; values: number[] }>,
-  opts: { unit?: string; format?: (v: number) => string } = {},
+  opts: { unit?: string; format?: (v: number) => string; tooltip?: ChartTooltip } = {},
 ): SVGElement {
   const format = opts.format ?? formatCount;
   const W = 640;
@@ -277,6 +397,7 @@ export function stackedBars(
 
   columns.forEach((_, i) => {
     let y = H - M.bottom;
+    const columnTotal = seriesByKey.reduce((acc, s) => acc + (s.values[i] ?? 0), 0);
     for (const s of seriesByKey) {
       const v = s.values[i] ?? 0;
       if (v <= 0) continue;
@@ -290,9 +411,16 @@ export function stackedBars(
         rx: 2,
       });
       (rect as SVGElement & { style: CSSStyleDeclaration }).style.fill = s.color;
-      const title = document.createElementNS(SVG_NS, 'title');
-      title.textContent = `${axisLabel(columns, i)} · ${s.name}: ${format(v)}`;
-      rect.append(title);
+      rect.setAttribute('aria-label', `${axisLabel(columns, i)} · ${s.name}: ${format(v)}`);
+      attachHover(
+        rect,
+        () => [
+          s.name,
+          `${format(v)}${columnTotal > 0 ? ` · ${((v / columnTotal) * 100).toFixed(1)}% of ${format(columnTotal)}` : ''}`,
+          axisLabel(columns, i),
+        ],
+        opts.tooltip,
+      );
       svg.append(rect);
     }
   });
