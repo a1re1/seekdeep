@@ -45,9 +45,21 @@ export function sizeCanvas(canvas: HTMLCanvasElement): void {
   }
 }
 
+/**
+ * Resolve a custom property to a paintable value. Kind colors are aliases
+ * (`--c-model: var(--green)`) and canvas/SVG cannot take `var()`, so follow
+ * the indirection a few hops before giving up.
+ */
 export function cssVar(name: string, fallback: string): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value.length > 0 ? value : fallback;
+  const styles = getComputedStyle(document.documentElement);
+  let value = styles.getPropertyValue(name).trim();
+  for (let hop = 0; hop < 4; hop += 1) {
+    const ref = /^var\(\s*(--[\w-]+)\s*(?:,\s*([^)]*))?\)$/.exec(value);
+    if (ref === null) break;
+    const next = styles.getPropertyValue(ref[1]!).trim();
+    value = next.length > 0 ? next : (ref[2] ?? '').trim();
+  }
+  return value.length > 0 && !value.startsWith('var(') ? value : fallback;
 }
 
 export function kindColor(kind: string): string {

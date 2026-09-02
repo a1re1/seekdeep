@@ -1,13 +1,14 @@
-// Session index view: a toolbar (connect ~/.claude / ~/.lci, scan progress,
-// text filter) above a collapsible project → worktree → session tree with
-// lci sessions nested under their Claude Code parent. Pure rendering: state
-// lives in the caller-provided model and every user action is delegated to
-// the actions callbacks, so main.ts owns connections, scanning and opening.
+// Session picker: a glass panel with a sidebar (sources to connect, projects
+// to filter by) and a flat, sortable list of sessions with lci children
+// nested under their Claude Code parent. Pure rendering: state lives in the
+// caller-provided model and every user action is delegated to the actions
+// callbacks, so main.ts owns connections, scanning and opening.
 
 import { el } from './dom.ts';
 import { formatDuration } from './format.ts';
+import { icon } from './icons.ts';
 import { splitWorktree } from '../index/link.ts';
-import type { ProjectGroup, SessionNode, WorktreeGroup } from '../index/link.ts';
+import type { ProjectGroup, SessionNode } from '../index/link.ts';
 import type { SessionEntry } from '../index/scan.ts';
 import type { SourceKind } from '../index/fs.ts';
 
@@ -42,19 +43,36 @@ export interface IndexActions {
   open(entry: SessionEntry): void;
 }
 
-// UI choices that should survive re-renders: which projects the user
-// collapsed, and which parents have their lci children expanded.
-const projectOpen = new Map<string, boolean>();
-const expandedKids = new Set<string>();
+export type SortKey = 'recent' | 'longest' | 'largest';
 
-const OPEN_PROJECTS = 3; // the three most recent projects start expanded
+const SORTS: Array<[SortKey, string]> = [
+  ['recent', 'Recent'],
+  ['longest', 'Longest'],
+  ['largest', 'Largest'],
+];
+
+// UI choices that should survive re-renders: the project/source filter, the
+// sort order, and which parents have their lci children expanded.
+const ui = {
+  project: null as string | null, // ProjectGroup.root
+  source: null as SourceKind | null,
+  sort: 'recent' as SortKey,
+};
+const expandedKids = new Set<string>();
 
 // ---- entry point -----------------------------------------------------------
 
 export function renderIndex(host: HTMLElement, model: IndexModel, actions: IndexActions): void {
-  const refocus = host.querySelector('input.index-filter') === document.activeElement;
+  const prev = host.querySelector<HTMLInputElement>('input.index-filter');
+  const refocus = prev !== null && prev === document.activeElement;
+  const scrollTop = host.querySelector<HTMLElement>('.picker-rows')?.scrollTop ?? 0;
+  if (ui.project !== null && !model.projects.some((p) => p.root === ui.project)) ui.project = null;
+
   host.textContent = '';
-  host.append(toolbar(model, actions), tree(model, actions));
+  host.append(sidebar(model, actions), mainColumn(model, actions));
+
+  const rows = host.querySelector<HTMLElement>('.picker-rows');
+  if (rows !== null) rows.scrollTop = scrollTop;
   if (refocus) {
     const filter = host.querySelector<HTMLInputElement>('input.index-filter');
     if (filter !== null) {
@@ -64,7 +82,7 @@ export function renderIndex(host: HTMLElement, model: IndexModel, actions: Index
   }
 }
 
-/** One-line summary for the collapsed index panel: "N projects · M sessions". */
+/** One-line summary: "N projects · M sessions". */
 export function indexSummary(model: IndexModel): string {
   const projects = model.projects.length;
   let sessions = 0;
@@ -77,30 +95,60 @@ function countNodes(node: SessionNode): number {
   return 1 + node.children.reduce((sum, c) => sum + countNodes(c), 0);
 }
 
-// ---- toolbar ---------------------------------------------------------------
+/** Total sessions (parents + nested children) in a project. */
+function projectCount(group: ProjectGroup): number {
+  let n = 0;
+  for (const w of group.worktrees) for (const s of w.sessions) n += countNodes(s);
+  return n;
+}
 
-function toolbar(model: IndexModel, actions: IndexActions): HTMLElement {
-  const progress =
-    model.progress !== null
-      ? el('span', { class: 'index-progress', role: 'status' }, `${model.progress.label} ${model.progress.done}/${model.progress.total}`)
-      : null;
+// ---- sidebar ---------------------------------------------------------------
+
+function sidebar(model: IndexModel, actions: IndexActions): HTMLElement {
+  const projects = el('div', { class: 'picker-projects' });
+  if (model.projects.length > 0) {
+    projects.append(projectRow('All projects', model.projects.reduce((n, p) => n + projectCount(p), 0), ui.project === null, () => {
+      ui.project = null;
+      rerender(actions);
+    }));
+    for (const group of model.projects) {
+      projects.append(projectRow(group.label, projectCount(group), ui.project === group.root, () => {
+        ui.project = ui.project === group.root ? null : group.root;
+        rerender(actions);
+      }));
+    }
+  } else {
+    projects.append(
+      el('p', { class: 'picker-note footnote' },
+        model.claude.connected || model.lci.connected
+          ? 'Connected, but no transcripts found yet.'
+          : 'Connect ~/.claude or ~/.lci to index your agent sessions. Directories are read locally; nothing is uploaded.',
+      ),
+    );
+  }
+
   return el(
-    'div',
-    { class: 'index-toolbar' },
-    sourceControl('claude', '~/.claude', model.claude, actions, model.busy),
-    sourceControl('lci', '~/.lci', model.lci, actions, model.busy),
-    progress,
-    el('input', {
-      class: 'index-filter',
-      type: 'text',
-      placeholder: 'filter sessions…',
-      value: model.filter,
-      oninput: () => actions.setFilter((document.activeElement as HTMLInputElement | null)?.value ?? model.filter),
-    }),
+    'aside',
+    { class: 'picker-side' },
+    el('span', { class: 'section-cap' }, 'Sources'),
+    sourceItem('claude', '~/.claude', model.claude, actions, model.busy),
+    sourceItem('lci', '~/.lci', model.lci, actions, model.busy),
+    el('span', { class: 'section-cap section-cap--gap' }, 'Projects'),
+    projects,
+    footer(model),
   );
 }
 
-function sourceControl(
+function projectRow(label: string, count: number, selected: boolean, onclick: () => void): HTMLElement {
+  return el(
+    'div',
+    { class: 'picker-project', role: 'button', tabindex: '0', 'aria-selected': selected ? 'true' : 'false', onclick, onkeydown: keyActivate(onclick) },
+    el('span', { class: 'picker-project-name' }, label),
+    el('span', { class: 'picker-project-n caption tabular' }, String(count)),
+  );
+}
+
+function sourceItem(
   kind: SourceKind,
   label: string,
   state: IndexSourceState,
@@ -108,164 +156,272 @@ function sourceControl(
   busy: boolean,
 ): HTMLElement {
   if (!state.connected) {
+    const verb = state.stored ? 'Reconnect' : 'Connect';
     return el(
       'button',
       {
-        class: 'index-connect',
+        class: 'vt-sideitem picker-source',
         type: 'button',
         disabled: busy,
         title: state.stored ? `re-grant read access to ${label} (remembered from last time)` : `pick your ${label} directory`,
         onclick: () => actions.connect(kind),
       },
-      `${state.stored ? 'reconnect' : 'connect'} ${label}`,
+      icon('folder', 14),
+      el('span', { class: 'picker-source-label' }, label),
+      el('span', { class: 'picker-source-action caption' }, verb),
     );
   }
-  return el(
-    'span',
-    { class: 'index-source' },
-    el('span', { class: 'index-source-label' }, `${label} · ${state.sessions} session${state.sessions === 1 ? '' : 's'}`),
-    el('button', { class: 'index-forget', type: 'button', title: `disconnect ${label}`, onclick: () => actions.forget(kind) }, 'forget'),
-  );
-}
-
-// ---- tree ------------------------------------------------------------------
-
-function tree(model: IndexModel, actions: IndexActions): HTMLElement {
-  const q = normalize(model.filter);
-  const body = el('div', { class: 'index-tree' });
-  if (model.projects.length === 0) {
-    body.append(
-      el(
-        'p',
-        { class: 'index-empty' },
-        model.claude.connected || model.lci.connected
-          ? 'Connected, but no transcripts found yet.'
-          : 'Connect ~/.claude and/or ~/.lci above to index your agent sessions. ',
-      ),
-      el(
-        'p',
-        { class: 'index-empty muted' },
-        'Clicking a session opens it in the trace viewer below. Everything stays in your browser: directories are read locally, nothing is uploaded.',
-      ),
-    );
-    return body;
-  }
-  model.projects.forEach((group, rank) => {
-    const block = projectBlock(group, rank, q, actions);
-    if (block !== null) body.append(block);
-  });
-  if (body.children.length === 0) {
-    body.append(el('p', { class: 'index-empty' }, `no sessions match “${model.filter.trim()}”`));
-  }
-  return body;
-}
-
-/** A project block, or null when the filter matches nothing inside it. `rank` = position by recency. */
-function projectBlock(group: ProjectGroup, rank: number, q: string, actions: IndexActions): HTMLElement | null {
-  const parts: HTMLElement[] = [];
-  let shown = 0;
-  let total = 0;
-  for (const wt of group.worktrees) {
-    total += wt.sessions.reduce((sum, s) => sum + countNodes(s), 0);
-    const block = worktreeBlock(wt, q, group.label, actions);
-    if (block !== null) {
-      parts.push(block.header, block.body);
-      shown += block.count;
-    }
-  }
-  if (parts.length === 0 && q !== '') return null;
-
-  const details = el(
-    'details',
-    {
-      class: 'index-project',
-      open: (q !== '' && shown > 0) || (projectOpen.get(group.root) ?? rank < OPEN_PROJECTS),
-      ontoggle: () => projectOpen.set(group.root, details.open),
-    },
-    el('summary', { class: 'index-project-summary' },
-      el('span', { class: 'index-project-label' }, group.label),
-      el('span', { class: 'index-project-meta' }, `${total} session${total === 1 ? '' : 's'} · ${dateLabel(group.latestMs)}`),
-    ),
-    ...parts,
-  );
-  return details;
-}
-
-function worktreeBlock(
-  wt: WorktreeGroup,
-  q: string,
-  projectLabel: string,
-  actions: IndexActions,
-): { header: HTMLElement; body: HTMLElement; count: number } | null {
-  const lines: HTMLElement[] = [];
-  for (const node of wt.sessions) {
-    const line = sessionBlock(node, q, projectLabel, actions);
-    if (line !== null) lines.push(line);
-  }
-  if (lines.length === 0) return null;
-  return {
-    header: el('div', { class: 'index-worktree' }, wt.label),
-    body: el('div', { class: 'index-worktree-body' }, ...lines),
-    count: lines.length,
-  };
-}
-
-/** One session row plus its nested lci children; null when filtered away. */
-function sessionBlock(node: SessionNode, q: string, projectLabel: string, actions: IndexActions): HTMLElement | null {
-  const entry = node.entry;
-  const self = q === '' || entryMatches(entry, q, projectLabel);
-  const kids = node.children.filter((k) => q === '' || entryMatches(k.entry, q, projectLabel));
-  if (!self && kids.length === 0) return null;
-
-  const kidsBox = el('div', { class: 'index-children' });
-  for (const k of kids) kidsBox.append(sessionLine(k, actions, true));
-
-  const line = el('div', { class: 'index-line' }, sessionLine(node, actions, false));
-  if (node.children.length > 0) {
-    const open = expandedKids.has(entry.id) || (q !== '' && kids.length > 0);
-    kidsBox.hidden = !open;
-    const btn = el(
-      'button',
-      {
-        class: `index-kids${open ? ' open' : ''}`,
-        type: 'button',
-        title: 'toggle nested lci sessions',
-        onclick: () => {
-          const show = kidsBox.hidden;
-          kidsBox.hidden = !show;
-          btn.classList.toggle('open', show);
-          btn.textContent = `${show ? '▾' : '▸'} ${node.children.length} lci`;
-          if (show) expandedKids.add(entry.id);
-          else expandedKids.delete(entry.id);
-        },
-      },
-      `${open ? '▾' : '▸'} ${node.children.length} lci`,
-    );
-    line.append(btn);
-  }
-  const block = el('div', { class: 'index-session-block' }, line, kidsBox);
-  return block;
-}
-
-function sessionLine(node: SessionNode, actions: IndexActions, child: boolean): HTMLElement {
-  const e = node.entry;
-  return el(
+  const selected = ui.source === kind;
+  const forget = el(
     'button',
     {
-      class: `index-session${child ? ' child' : ''}`,
+      class: 'picker-forget',
       type: 'button',
-      title: `${e.title} — ${e.path}`,
-      onclick: () => actions.open(e),
+      title: `disconnect ${label}`,
+      'aria-label': `disconnect ${label}`,
+      onclick: ((e: Event) => {
+        e.stopPropagation();
+        if (ui.source === kind) ui.source = null;
+        actions.forget(kind);
+      }) as EventListener,
     },
-    el('span', { class: `badge badge-${e.kind}` }, e.kind),
-    el('span', { class: 'index-title' }, e.title === '' ? e.id : e.title),
-    e.branch !== null ? el('span', { class: 'index-branch' }, e.branch) : null,
-    el('span', { class: 'index-when' }, dateLabel(e.startMs)),
-    el('span', { class: 'index-dur' }, formatDuration(Math.max(0, e.endMs - e.startMs))),
+    icon('x', 11),
   );
+  const toggle = (): void => {
+    ui.source = selected ? null : kind;
+    rerender(actions);
+  };
+  return el(
+    'div',
+    {
+      class: 'vt-sideitem picker-source',
+      role: 'button',
+      tabindex: '0',
+      'aria-selected': selected ? 'true' : 'false',
+      title: selected ? 'show all sources' : `show only ${label} sessions`,
+      onclick: toggle,
+      onkeydown: keyActivate(toggle),
+    },
+    icon('folder', 14),
+    el('span', { class: 'picker-source-label' }, label),
+    el('span', { class: 'vt-badge vt-badge--neutral picker-source-n' }, String(state.sessions)),
+    forget,
+  );
+}
+
+function footer(model: IndexModel): HTMLElement {
+  const parts: string[] = [];
+  if (model.claude.connected) parts.push(`${model.claude.sessions.toLocaleString()} claude`);
+  if (model.lci.connected) parts.push(`${model.lci.sessions.toLocaleString()} lci`);
+  const text =
+    model.progress !== null
+      ? `${model.progress.label} ${model.progress.done}/${model.progress.total}`
+      : parts.length > 0
+        ? parts.join(' · ')
+        : 'nothing connected';
+  return el('div', { class: 'picker-foot caption' }, el('span', { role: 'status' }, text));
+}
+
+// ---- main column -----------------------------------------------------------
+
+function mainColumn(model: IndexModel, actions: IndexActions): HTMLElement {
+  const group = ui.project === null ? null : (model.projects.find((p) => p.root === ui.project) ?? null);
+  const q = normalize(model.filter);
+  const nodes = collectNodes(model, group).filter((n) => n.self || n.kids.length > 0);
+  const sorted = sortNodes(nodes, ui.sort);
+  const total = sorted.reduce((n, item) => n + 1 + item.node.children.length, 0);
+
+  const sortSeg = el(
+    'nav',
+    { class: 'vt-seg', 'aria-label': 'sort sessions' },
+    ...SORTS.map(([key, label]) =>
+      el(
+        'button',
+        {
+          type: 'button',
+          'aria-pressed': ui.sort === key ? 'true' : 'false',
+          onclick: () => {
+            ui.sort = key;
+            rerender(actions);
+          },
+        },
+        label,
+      ),
+    ),
+  );
+
+  const filter = el(
+    'label',
+    { class: 'vt-input vt-input--capsule picker-filter' },
+    icon('search', 13),
+    el('input', {
+      class: 'index-filter',
+      type: 'search',
+      placeholder: 'Filter sessions',
+      'aria-label': 'Filter sessions',
+      value: model.filter,
+      oninput: () => actions.setFilter((document.activeElement as HTMLInputElement | null)?.value ?? model.filter),
+    }),
+  );
+
+  const head = el(
+    'div',
+    { class: 'picker-head' },
+    el('span', { class: 'picker-title' }, group === null ? 'All sessions' : group.label),
+    el('span', { class: 'footnote' }, `${total} session${total === 1 ? '' : 's'}`),
+    el('span', { class: 'spacer' }),
+    sortSeg,
+    filter,
+  );
+
+  const rows = el('div', { class: 'picker-rows' });
+  if (sorted.length === 0) {
+    rows.append(
+      el(
+        'div',
+        { class: 'picker-empty footnote' },
+        model.projects.length === 0
+          ? 'No sessions indexed yet. Connect a source on the left, or drop a transcript on the toolbar.'
+          : q !== ''
+            ? `No sessions match “${model.filter.trim()}”.`
+            : 'No sessions match.',
+      ),
+    );
+  } else {
+    for (const item of sorted) rows.append(sessionBlock(item, q, actions));
+  }
+  return el('div', { class: 'picker-main' }, head, rows);
+}
+
+interface Candidate {
+  node: SessionNode;
+  project: string;
+  self: boolean;
+  kids: SessionNode[];
+}
+
+/** Every top-level node under the project filter, with the text filter applied. */
+function collectNodes(model: IndexModel, only: ProjectGroup | null): Candidate[] {
+  const q = normalize(model.filter);
+  const out: Candidate[] = [];
+  const groups = only === null ? model.projects : [only];
+  for (const group of groups) {
+    for (const wt of group.worktrees) {
+      for (const node of wt.sessions) {
+        if (ui.source !== null && node.entry.kind !== ui.source && !node.children.some((c) => c.entry.kind === ui.source)) continue;
+        const self = q === '' || entryMatches(node.entry, q, group.label);
+        const kids = node.children.filter((k) => (q === '' || entryMatches(k.entry, q, group.label)) && (ui.source === null || k.entry.kind === ui.source || self));
+        out.push({ node, project: group.label, self, kids });
+      }
+    }
+  }
+  return out;
+}
+
+function sortNodes(items: Candidate[], sort: SortKey): Candidate[] {
+  const dur = (e: SessionEntry) => Math.max(0, e.endMs - e.startMs);
+  const by: Record<SortKey, (a: Candidate, b: Candidate) => number> = {
+    recent: (a, b) => b.node.entry.startMs - a.node.entry.startMs,
+    longest: (a, b) => dur(b.node.entry) - dur(a.node.entry) || b.node.entry.startMs - a.node.entry.startMs,
+    largest: (a, b) => b.node.entry.sizeBytes - a.node.entry.sizeBytes || b.node.entry.startMs - a.node.entry.startMs,
+  };
+  return [...items].sort(by[sort]);
+}
+
+/** One session row plus its nested lci children. */
+function sessionBlock(item: Candidate, q: string, actions: IndexActions): HTMLElement {
+  const { node, kids } = item;
+  const entry = node.entry;
+  const hasKids = node.children.length > 0;
+  const open = hasKids && (expandedKids.has(entry.id) || (q !== '' && kids.length > 0));
+
+  const kidsBox = el('div', { class: 'picker-children' });
+  kidsBox.hidden = !open;
+  for (const k of open ? kids : node.children) kidsBox.append(sessionRow(k, item.project, actions, true));
+
+  const chevron = el(
+    'span',
+    {
+      class: `picker-chevron${hasKids ? '' : ' picker-chevron--none'}`,
+      ...(hasKids ? { role: 'button', title: 'toggle nested lci sessions' } : {}),
+      onclick: ((e: Event) => {
+        if (!hasKids) return;
+        e.stopPropagation();
+        const show = kidsBox.hidden;
+        kidsBox.hidden = !show;
+        chevron.replaceChildren(icon(show ? 'chevron-down' : 'chevron-right', 12));
+        if (show) expandedKids.add(entry.id);
+        else expandedKids.delete(entry.id);
+      }) as EventListener,
+    },
+    icon(open ? 'chevron-down' : 'chevron-right', 12),
+  );
+
+  return el('div', { class: 'picker-block' }, sessionRow(node, item.project, actions, false, chevron), kidsBox);
+}
+
+function sessionRow(
+  node: SessionNode,
+  project: string,
+  actions: IndexActions,
+  child: boolean,
+  chevron?: HTMLElement,
+): HTMLElement {
+  const e = node.entry;
+  const wt = e.cwd !== null ? (splitWorktree(e.cwd).worktree ?? 'main') : null;
+  const meta = [ui.project === null ? project : null, wt, e.branch].filter((s): s is string => s !== null && s !== '').join(' · ');
+  const lciCount = node.children.length;
+  const open = (): void => actions.open(e);
+  return el(
+    'div',
+    {
+      class: `picker-session${child ? ' picker-session--child' : ''}`,
+      role: 'button',
+      tabindex: '0',
+      title: `${e.title === '' ? e.id : e.title} — ${e.path}`,
+      onclick: open,
+      onkeydown: keyActivate(open),
+    },
+    chevron ?? null,
+    kindTag(e.kind),
+    el(
+      'div',
+      { class: 'picker-session-text' },
+      el('span', { class: 'picker-session-title' }, e.title === '' ? e.id : e.title),
+      meta !== '' ? el('span', { class: 'picker-session-meta caption mono' }, meta) : null,
+    ),
+    el(
+      'div',
+      { class: 'picker-session-cols footnote tabular' },
+      lciCount > 0 ? el('span', { class: 'picker-lci-count' }, `${lciCount} lci`) : el('span', { class: 'picker-lci-count' }),
+      el('span', { class: 'picker-col picker-col--size' }, formatBytes(e.sizeBytes)),
+      el('span', { class: 'picker-col picker-col--dur' }, formatDuration(Math.max(0, e.endMs - e.startMs))),
+      el('span', { class: 'picker-col picker-col--when' }, dateLabel(e.startMs)),
+      el('span', { class: 'picker-go' }, child ? null : icon('chevron-right', 12)),
+    ),
+  );
+}
+
+export function kindTag(kind: string): HTMLElement {
+  return el('span', { class: `vt-tag tag-${kind}` }, kind);
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/** Re-render through the owner: setFilter with the unchanged text repaints the panel. */
+function rerender(actions: IndexActions): void {
+  const input = document.querySelector<HTMLInputElement>('#index-panel input.index-filter');
+  actions.setFilter(input?.value ?? '');
+}
+
+function keyActivate(fn: () => void): EventListener {
+  return ((e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fn();
+    }
+  }) as EventListener;
+}
 
 function normalize(s: string): string {
   return s.trim().toLowerCase();
@@ -281,4 +437,11 @@ function entryMatches(entry: SessionEntry, q: string, projectLabel: string): boo
 
 function dateLabel(ms: number): string {
   return new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '–';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -1,15 +1,15 @@
-// seekdeep entry point: file loading, session tabs, trace waterfall + detail
-// pane + cache trace, summary panel, pricing editor. All state lives in the
-// browser; nothing is uploaded anywhere.
+// seekdeep entry point: file loading, session picker, trace waterfall +
+// inspector + cache trace, summary cards, activity and settings pages. All
+// state lives in the browser; nothing is uploaded anywhere.
 
 import { clearActivityCache, collectBuckets } from './index/activity-cache.ts';
 import { clearScanCache, scanWithCache } from './index/cache.ts';
 import { forgetDirectory, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
 import type { SourceFile, SourceKind } from './index/fs.ts';
-import { buildIndex } from './index/link.ts';
+import { buildIndex, splitWorktree } from './index/link.ts';
 import type { ProjectGroup, SessionNode } from './index/link.ts';
 import type { SessionEntry } from './index/scan.ts';
-import { indexSummary, renderIndex } from './ui/index-view.ts';
+import { renderIndex } from './ui/index-view.ts';
 import type { IndexActions, IndexModel, IndexProgress } from './ui/index-view.ts';
 import type { Session, Span } from './model.ts';
 import { flatten } from './model.ts';
@@ -19,17 +19,23 @@ import { applyPricing, effectivePricing } from './pricing.ts';
 import { collectCacheBars, drawCacheTrace } from './ui/cache-trace.ts';
 import { renderDetail, renderEmptyDetail } from './ui/detail.ts';
 import { byId, el, sizeCanvas } from './ui/dom.ts';
+import { icon } from './ui/icons.ts';
 import { readFiles } from './ui/loader.ts';
 import { renderPricingEditor } from './ui/pricing.ts';
 import { renderActivity } from './ui/activity-view.ts';
 import { aggregate, bucketSession, mergeBuckets, rangeFor } from './stats.ts';
 import type { UsageBucket } from './stats.ts';
 import { renderSummary, summarize } from './ui/summary.ts';
+import { initTheme, toggleTheme, type Theme } from './ui/theme.ts';
 import { TraceView } from './ui/trace.ts';
+
+type Page = 'trace' | 'activity' | 'settings';
 
 interface Loaded {
   session: Session;
   fileName: string;
+  /** The index entry this session was opened from, when it came from the picker. */
+  entry: SessionEntry | undefined;
   parents: Map<string, Span>; // child id → parent span
   /** lci sessions grafted into this tree, by grafted span id. */
   lciChildren: Map<string, SessionEntry>;
@@ -43,6 +49,8 @@ const state = {
   trace: null as TraceView | null,
   t0: 0,
   t1: 0,
+  /** The picker is shown instead of the open session ("‹ Sessions"). */
+  picker: true,
 };
 
 function main(): void {
@@ -56,13 +64,14 @@ function main(): void {
   const tooltip = byId<HTMLElement>('tooltip');
   const zoomOut = byId<HTMLButtonElement>('zoom-out');
   const breadcrumb = byId<HTMLElement>('breadcrumb');
+  const spanCount = byId<HTMLElement>('span-count');
 
   const trace = new TraceView(traceHost, tooltip);
   state.trace = trace;
 
   // Activity page state (declared early: scans and drops invalidate it).
   const activity = {
-    page: 'trace' as 'trace' | 'activity',
+    page: 'trace' as Page,
     preset: '48h',
     buckets: null as UsageBucket[] | null, // null until the first collection
     collecting: false,
@@ -71,9 +80,12 @@ function main(): void {
 
   trace.onSelect = (span) => renderDetailFor(span);
   trace.onZoom = (span) => zoomTo(span);
+  trace.onRows = (n) => {
+    spanCount.textContent = `${n.toLocaleString()} span${n === 1 ? '' : 's'}`;
+  };
 
   const detailActions = {
-    select: (span: Span) => trace.select(span),
+    select: (span: Span | null) => trace.select(span),
     zoom: (span: Span) => zoomTo(span),
     parentOf: (span: Span) => current()?.parents.get(span.id) ?? null,
     openSession: (span: Span) => {
@@ -98,16 +110,23 @@ function main(): void {
     if (fileInput.files !== null) void handleFiles(fileInput.files);
     fileInput.value = '';
   });
-  dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropZone.classList.add('dragover');
-  });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    if (e.dataTransfer?.files.length) void handleFiles(e.dataTransfer.files);
-  });
+  // The whole window accepts drops; the pill in the toolbar is the visible target.
+  for (const target of [dropZone, document.body]) {
+    target.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+    // relatedTarget is null when the drag leaves the window (or is cancelled).
+    target.addEventListener('dragleave', (e) => {
+      if (e.target === target || e.relatedTarget === null) dropZone.classList.remove('dragover');
+    });
+    target.addEventListener('dragend', () => dropZone.classList.remove('dragover'));
+    target.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer?.files.length) void handleFiles(e.dataTransfer.files);
+    });
+  }
 
   byId<HTMLButtonElement>('load-sample').addEventListener('click', () => {
     void (async () => {
@@ -123,9 +142,8 @@ function main(): void {
   });
 
   // ---- session index ------------------------------------------------------
-  const indexHost = byId<HTMLElement>('index-view');
-  const indexPanel = byId<HTMLDetailsElement>('index-panel');
-  const indexSummaryLabel = byId<HTMLElement>('index-summary');
+  const indexPanel = byId<HTMLElement>('index-panel');
+  const sourcesSummary = byId<HTMLElement>('sources-summary');
   const index = {
     sources: {
       claude: { connected: false, stored: false, sessions: 0 },
@@ -205,6 +223,29 @@ function main(): void {
     if (activity.page === 'activity') void collectActivity();
   }
 
+  /** Re-read every connected source (picks up transcripts written since the last scan). */
+  async function rescanSources(): Promise<void> {
+    if (index.busy) return; // a scan is already running; let it finish
+    const kinds = (['claude', 'lci'] as const).filter((k) => index.sources[k].connected);
+    if (kinds.length === 0) {
+      setStatus('nothing connected yet — connect a source from the session picker');
+      return;
+    }
+    for (const kind of kinds) {
+      try {
+        const files = await restoreDirectory(kind);
+        if (files === null) {
+          index.sources[kind] = { connected: false, stored: true, sessions: 0 };
+          renderIndexPanel();
+          continue;
+        }
+        await scanSource(kind, files);
+      } catch (err) {
+        setStatus(`failed to rescan: ${err instanceof Error ? err.message : String(err)}`, true);
+      }
+    }
+  }
+
   async function openEntry(entry: SessionEntry): Promise<void> {
     try {
       const name = entry.title === '' ? entry.id : entry.title;
@@ -214,7 +255,6 @@ function main(): void {
       if (entry.title !== '') session.title = entry.title; // index title beats the parser's guess
       addSession(session, name, entry);
       setStatus('');
-      indexPanel.open = false; // collapse the index so the trace is visible
     } catch (err) {
       setStatus(`failed to open session: ${err instanceof Error ? err.message : String(err)}`, true);
     }
@@ -233,9 +273,14 @@ function main(): void {
       progress: index.progress,
       busy: index.busy,
     };
-    renderIndex(indexHost, model, indexActions);
-    indexSummaryLabel.textContent =
-      index.projects.length === 0 ? 'session index' : `session index — ${indexSummary(model)}`;
+    renderIndex(indexPanel, model, indexActions);
+    sourcesSummary.textContent = (['claude', 'lci'] as const)
+      .map((k) => {
+        const s = index.sources[k];
+        const label = k === 'claude' ? '~/.claude' : '~/.lci';
+        return `${label} · ${s.connected ? `${s.sessions} session${s.sessions === 1 ? '' : 's'}` : s.stored ? 'reconnect needed' : 'not connected'}`;
+      })
+      .join('   ');
   }
 
   // On load, silently rescan directories the browser still lets us read;
@@ -265,15 +310,15 @@ function main(): void {
   }
 
   function addSession(session: Session, fileName: string, entry?: SessionEntry): void {
-    const loaded: Loaded = { session, fileName, parents: new Map(), lciChildren: new Map(), grafting: false };
+    const loaded: Loaded = { session, fileName, entry, parents: new Map(), lciChildren: new Map(), grafting: false };
     reindexParents(loaded);
     state.sessions.push(loaded);
     state.active = state.sessions.length - 1;
     state.zoomNode = null;
+    state.picker = false;
     activity.buckets = null; // a dropped transcript may add usage the index lacks
     showPage('trace');
     renderTabs();
-    indexPanel.open = false; // the index yields to the trace; reopen it from its header
     render(true);
     if (session.format === 'claude-code') void graftLciChildren(loaded, entry);
   }
@@ -360,8 +405,8 @@ function main(): void {
         el(
           'button',
           {
-            class: `tab${i === state.active ? ' active' : ''}`,
             type: 'button',
+            'aria-selected': i === state.active ? 'true' : 'false',
             title: loaded.fileName,
             onclick: () => {
               state.active = i;
@@ -377,14 +422,19 @@ function main(): void {
   }
 
   // ---- rendering ----------------------------------------------------------
+  /** Which of picker / trace is visible on the Trace page. */
+  function syncTraceScreens(): void {
+    const onTrace = activity.page === 'trace';
+    const showTrace = onTrace && current() !== undefined && !state.picker;
+    app.hidden = !showTrace;
+    indexPanel.hidden = !(onTrace && !showTrace);
+  }
+
   /** `newTree` = a different session or zoom root: rebuild rows and clear selection. */
   function render(newTree: boolean): void {
     const loaded = current();
-    if (loaded === undefined) {
-      app.hidden = true;
-      return;
-    }
-    app.hidden = activity.page !== 'trace'; // the activity page replaces the trace, it does not sit on top
+    syncTraceScreens();
+    if (loaded === undefined || app.hidden) return;
     const sessionRoot = loaded.session.root;
     const root = state.zoomNode ?? sessionRoot;
 
@@ -395,6 +445,7 @@ function main(): void {
     if (newTree) {
       trace.setRoot(root, sessionRoot.startMs);
       renderEmptyDetail(detailPane);
+      setExpandMode('default');
     }
     trace.setWindow(state.t0, state.t1);
 
@@ -402,8 +453,30 @@ function main(): void {
     drawCacheTrace(cacheCanvas, collectCacheBars(root, state.t0, state.t1), state.t0, state.t1);
 
     renderSummary(byId<HTMLElement>('summary-panel'), loaded.session, summarize(sessionRoot));
+    renderCrumbs(loaded);
     breadcrumb.textContent = breadcrumbText(loaded, state.zoomNode);
     zoomOut.disabled = state.zoomNode === null;
+  }
+
+  function renderCrumbs(loaded: Loaded): void {
+    const entry = loaded.entry;
+    const cwd = entry?.cwd ?? null;
+    const wt = cwd !== null ? (splitWorktree(cwd).worktree ?? 'main') : null;
+    const branch = entry?.branch ?? null;
+    byId<HTMLElement>('crumb-project').textContent = entry !== undefined ? projectLabelFor(entry) : loaded.fileName;
+    byId<HTMLElement>('crumb-title').textContent = loaded.session.title || loaded.fileName;
+    byId<HTMLElement>('crumb-meta').textContent = [wt, branch].filter((s): s is string => s !== null && s !== '').join(' · ');
+  }
+
+  function projectLabelFor(entry: SessionEntry): string {
+    for (const project of index.projects) {
+      for (const group of project.worktrees) {
+        for (const node of group.sessions) {
+          if (node.entry.path === entry.path || node.children.some((c) => c.entry.path === entry.path)) return project.label;
+        }
+      }
+    }
+    return entry.slug;
   }
 
   function renderDetailFor(span: Span | null): void {
@@ -433,19 +506,38 @@ function main(): void {
     if (trace.selected !== null) renderDetailFor(trace.selected);
   });
 
-  // ---- activity page ------------------------------------------------------
+  // ---- theme ---------------------------------------------------------------
+  const themeToggle = byId<HTMLButtonElement>('theme-toggle');
+  const themeSwitch = byId<HTMLInputElement>('theme-switch');
+  const syncTheme = (t: Theme): void => {
+    themeToggle.replaceChildren(icon(t === 'dark' ? 'moon' : 'sun', 16));
+    themeToggle.title = t === 'dark' ? 'switch to light theme' : 'switch to dark theme';
+    themeSwitch.checked = t === 'dark';
+  };
+  syncTheme(initTheme()); // reflects the pre-paint choice onto <html> too
+  themeToggle.addEventListener('click', () => syncTheme(toggleTheme()));
+  themeSwitch.addEventListener('change', () => syncTheme(toggleTheme()));
+
+  // ---- pages ---------------------------------------------------------------
   const activitySection = byId<HTMLElement>('activity');
   const activityHost = byId<HTMLElement>('activity-host');
+  const settingsSection = byId<HTMLElement>('settings');
   const navTrace = byId<HTMLButtonElement>('nav-trace');
   const navActivity = byId<HTMLButtonElement>('nav-activity');
+  const navSettings = byId<HTMLButtonElement>('nav-settings');
+  navSettings.replaceChildren(icon('settings', 16));
 
-  function showPage(page: 'trace' | 'activity'): void {
+  function showPage(page: Page): void {
     activity.page = page;
-    navTrace.classList.toggle('active', page === 'trace');
-    navActivity.classList.toggle('active', page === 'activity');
+    navTrace.setAttribute('aria-pressed', page === 'trace' ? 'true' : 'false');
+    navActivity.setAttribute('aria-pressed', page === 'activity' ? 'true' : 'false');
+    navSettings.setAttribute('aria-pressed', page === 'settings' ? 'true' : 'false');
+    navSettings.classList.toggle('vt-btn--glass', page === 'settings');
+    navSettings.classList.toggle('vt-btn--plain', page !== 'settings');
     activitySection.hidden = page !== 'activity';
-    app.hidden = page !== 'trace' || current() === undefined;
+    settingsSection.hidden = page !== 'settings';
     if (page === 'activity') {
+      syncTraceScreens();
       renderActivityPage();
       if (activity.buckets === null) void collectActivity();
     } else {
@@ -454,6 +546,12 @@ function main(): void {
   }
   navTrace.addEventListener('click', () => showPage('trace'));
   navActivity.addEventListener('click', () => showPage('activity'));
+  navSettings.addEventListener('click', () => showPage(activity.page === 'settings' ? 'trace' : 'settings'));
+  byId<HTMLButtonElement>('back-to-sessions').addEventListener('click', () => {
+    state.picker = true;
+    setFocus(false);
+  });
+  byId<HTMLButtonElement>('sources-rescan').addEventListener('click', () => void rescanSources());
 
   /** Index entries plus sessions that were dropped in and are not in the index. */
   function activitySources(): { entries: SessionEntry[]; extra: Session[] } {
@@ -498,9 +596,9 @@ function main(): void {
         progress: activity.progress,
         preset: activity.preset,
         empty: nothing
-          ? 'connect ~/.claude or ~/.lci above (or drop a transcript) to see your activity'
+          ? 'Connect ~/.claude or ~/.lci from the session picker (or drop a transcript) to see your activity.'
           : buckets === null
-            ? 'reading transcripts…'
+            ? 'Reading transcripts…'
             : null,
       },
       {
@@ -521,15 +619,34 @@ function main(): void {
     state.zoomNode = null;
     render(true);
   });
-  byId<HTMLButtonElement>('collapse-all').addEventListener('click', () => trace.collapseAll());
-  byId<HTMLButtonElement>('expand-all').addEventListener('click', () => trace.expandAll());
+  type ExpandMode = 'default' | 'collapse' | 'expand';
+  const expandButtons: Record<ExpandMode, HTMLButtonElement> = {
+    default: byId<HTMLButtonElement>('expand-default'),
+    collapse: byId<HTMLButtonElement>('collapse-all'),
+    expand: byId<HTMLButtonElement>('expand-all'),
+  };
+  function setExpandMode(mode: ExpandMode): void {
+    for (const [key, button] of Object.entries(expandButtons)) button.setAttribute('aria-pressed', key === mode ? 'true' : 'false');
+  }
+  expandButtons.default.addEventListener('click', () => {
+    trace.resetCollapse();
+    setExpandMode('default');
+  });
+  expandButtons.collapse.addEventListener('click', () => {
+    trace.collapseAll();
+    setExpandMode('collapse');
+  });
+  expandButtons.expand.addEventListener('click', () => {
+    trace.expandAll();
+    setExpandMode('expand');
+  });
 
-  // Focus mode: only the waterfall (plus its detail pane) stays on screen.
+  // Focus mode: only the waterfall (plus its inspector) stays on screen.
   const focusBtn = byId<HTMLButtonElement>('focus-toggle');
   const setFocus = (on: boolean): void => {
     document.body.classList.toggle('focus', on);
-    focusBtn.textContent = on ? '⤡ exit focus' : '⤢ focus';
-    focusBtn.title = on ? 'show the summary and index again (f)' : 'give the waterfall the whole window (f)';
+    focusBtn.textContent = on ? '⤡ Exit focus' : '⤢ Focus';
+    focusBtn.title = on ? 'show the toolbar and summary again (f)' : 'give the waterfall the whole window (f)';
     render(false);
   };
   focusBtn.addEventListener('click', () => setFocus(!document.body.classList.contains('focus')));
@@ -553,8 +670,8 @@ function main(): void {
     }
   });
 
-  // Draggable divider between the waterfall and the detail pane.
-  const layout = byId<HTMLElement>('trace-layout');
+  // Draggable divider between the waterfall and the inspector.
+  const layout = byId<HTMLElement>('trace-section');
   const splitter = byId<HTMLElement>('trace-splitter');
   const DETAIL_KEY = 'seekdeep.detailWidth';
   const applyDetailWidth = (px: number): void => {
@@ -612,8 +729,10 @@ function main(): void {
       path.unshift(cur.name.length > 40 ? `${cur.name.slice(0, 40)}…` : cur.name);
       cur = loaded.parents.get(cur.id);
     }
-    return path.join(' › ');
+    return `zoomed: ${path.join(' › ')}`;
   }
+
+  syncTraceScreens();
 }
 
 main();

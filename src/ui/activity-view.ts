@@ -4,6 +4,7 @@
 
 import type { Activity } from '../stats.ts';
 import { formatCount, formatCost, formatPct } from './format.ts';
+import { icon } from './icons.ts';
 
 export interface ActivityModel {
   activity: Activity | null;
@@ -21,10 +22,13 @@ export interface ActivityActions {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// Ten distinguishable hues, assigned to models in first-seen order.
+// Design-system hues, assigned to models in first-seen order. These are CSS
+// variables so they follow the theme; they are applied via inline style
+// (presentation attributes cannot carry var()).
 const PALETTE = [
-  '#f97316', '#3b82f6', '#10b981', '#a78bfa', '#f59e0b',
-  '#ef4444', '#06b6d4', '#ec4899', '#84cc16', '#8b5cf6',
+  'var(--accent)', 'var(--teal)', 'var(--green)', 'var(--purple)', 'var(--orange)',
+  'var(--red)', 'var(--indigo)', 'var(--pink)', 'var(--yellow)',
+  'color-mix(in oklch, var(--green) 55%, var(--yellow))',
 ];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -40,7 +44,7 @@ export function renderActivity(host: HTMLElement, model: ActivityModel, actions:
   host.append(buildToolbar(model, actions));
   if (model.empty !== null) {
     const note = document.createElement('p');
-    note.className = 'muted activity-empty';
+    note.className = 'card activity-empty footnote';
     note.textContent = model.empty;
     host.append(note);
     return;
@@ -53,11 +57,12 @@ export function renderActivity(host: HTMLElement, model: ActivityModel, actions:
 function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLElement {
   const select = document.createElement('select');
   select.id = 'activity-range';
+  select.className = 'vt-select';
   for (const [value, label] of [
-    ['48h', 'past 48 hours'],
-    ['7d', 'past 7 days'],
-    ['30d', 'past 30 days'],
-    ['all', 'all time'],
+    ['48h', 'Past 48 hours'],
+    ['7d', 'Past 7 days'],
+    ['30d', 'Past 30 days'],
+    ['all', 'All time'],
   ] as const) {
     const option = document.createElement('option');
     option.value = value;
@@ -67,28 +72,32 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   select.value = model.preset;
   select.addEventListener('change', () => actions.onRange(select.value));
   select.disabled = model.progress !== null;
+  const selectWrap = document.createElement('span');
+  selectWrap.className = 'vt-select-wrap';
+  selectWrap.append(select, icon('chevron-down', 12));
 
   const rescan = document.createElement('button');
   rescan.id = 'activity-rescan';
-  rescan.textContent = 'rescan';
+  rescan.type = 'button';
+  rescan.className = 'vt-btn vt-btn--glass';
+  rescan.textContent = 'Rescan';
+  rescan.disabled = model.progress !== null;
   rescan.addEventListener('click', () => actions.onRescan());
 
   const toolbar = document.createElement('div');
-  toolbar.className = 'toolbar activity-toolbar';
-  const head = document.createElement('div');
-  head.className = 'activity-head';
-  const title = document.createElement('h2');
-  title.textContent = 'activity';
+  toolbar.className = 'page-head activity-toolbar';
+  const title = document.createElement('span');
+  title.className = 'page-title';
+  title.textContent = 'Activity';
   const subtitle = document.createElement('span');
-  subtitle.className = 'muted';
-  subtitle.textContent = 'your usage across models from ~/.claude and ~/.lci';
-  head.append(title, subtitle);
-  toolbar.append(head);
-
+  subtitle.className = 'footnote';
+  subtitle.textContent = 'Your usage across models from ~/.claude and ~/.lci';
+  const spacer = document.createElement('span');
+  spacer.className = 'spacer';
   const status = document.createElement('span');
-  status.className = 'muted activity-status';
+  status.className = 'footnote activity-status';
   status.textContent = model.progress ?? '';
-  toolbar.append(status, select, rescan);
+  toolbar.append(title, subtitle, spacer, status, selectWrap, rescan);
   return toolbar;
 }
 
@@ -100,22 +109,24 @@ function buildCards(activity: Activity | null): HTMLElement {
   const metrics: Array<{ key: string; label: string; value: string; series: number[]; delta: number; badWhenUp: boolean }> = activity === null
     ? []
     : [
-      { key: 'cost', label: 'total spend', value: formatCost(activity.totals.costUsd), series: activity.sparkline.costUsd, delta: activity.delta.costUsd, badWhenUp: true },
-      { key: 'requests', label: 'requests', value: formatCount(activity.totals.requests), series: activity.sparkline.requests, delta: activity.delta.requests, badWhenUp: false },
-      { key: 'tokens', label: 'token volume', value: formatCount(activity.totals.tokens), series: activity.sparkline.tokens, delta: activity.delta.tokens, badWhenUp: false },
-      { key: 'cache', label: 'cache hit rate', value: formatPct(activity.totals.cacheHit), series: activity.sparkline.cacheHit, delta: activity.delta.cacheHit, badWhenUp: false },
-      { key: 'blended', label: 'blended $/1M', value: `$${activity.totals.blendedPerM.toFixed(2)}`, series: activity.sparkline.blendedPerM, delta: activity.delta.blendedPerM, badWhenUp: true },
+      { key: 'cost', label: 'Total spend', value: formatCost(activity.totals.costUsd), series: activity.sparkline.costUsd, delta: activity.delta.costUsd, badWhenUp: true },
+      { key: 'requests', label: 'Requests', value: formatCount(activity.totals.requests), series: activity.sparkline.requests, delta: activity.delta.requests, badWhenUp: false },
+      { key: 'tokens', label: 'Token volume', value: formatCount(activity.totals.tokens), series: activity.sparkline.tokens, delta: activity.delta.tokens, badWhenUp: false },
+      { key: 'cache', label: 'Cache hit rate', value: formatPct(activity.totals.cacheHit), series: activity.sparkline.cacheHit, delta: activity.delta.cacheHit, badWhenUp: false },
+      { key: 'blended', label: 'Blended $/1M', value: `$${activity.totals.blendedPerM.toFixed(2)}`, series: activity.sparkline.blendedPerM, delta: activity.delta.blendedPerM, badWhenUp: true },
     ];
   for (const m of metrics) {
     const card = document.createElement('div');
     card.className = 'stat-card';
     const label = document.createElement('span');
-    label.className = 'stat-label muted';
+    label.className = 'stat-k';
     label.textContent = m.label;
     const value = document.createElement('span');
-    value.className = 'stat-value';
+    value.className = 'stat-v';
     value.textContent = m.value;
-    card.append(label, value, sparkline(m.series));
+    const text = document.createElement('div');
+    text.className = 'stat-text';
+    text.append(label, value);
     const delta = document.createElement('span');
     const good = m.badWhenUp ? m.delta < 0 : m.delta > 0;
     const neutral = !Number.isFinite(m.delta) || m.delta === 0;
@@ -125,7 +136,8 @@ function buildCards(activity: Activity | null): HTMLElement {
     vs.className = 'muted stat-vs';
     vs.textContent = 'vs prev period';
     delta.append(' ', vs);
-    card.append(delta);
+    text.append(delta);
+    card.append(text, sparkline(m.series));
     row.append(card);
   }
   return row;
@@ -133,13 +145,13 @@ function buildCards(activity: Activity | null): HTMLElement {
 
 /** Compact sparkline: a filled area + line over the per-column series. */
 function sparkline(series: number[]): SVGElement {
-  const svg = svgEl('svg', { class: 'sparkline', viewBox: '0 0 100 24', preserveAspectRatio: 'none' });
+  const svg = svgEl('svg', { class: 'sparkline', viewBox: '0 0 100 32', preserveAspectRatio: 'none' });
   const max = Math.max(...series, 0);
   if (series.length > 1 && max > 0) {
-    const pts = series.map((v, i) => `${((i / (series.length - 1)) * 100).toFixed(2)},${(22 - (v / max) * 20).toFixed(2)}`);
+    const pts = series.map((v, i) => `${((i / (series.length - 1)) * 100).toFixed(2)},${(30 - (v / max) * 28).toFixed(2)}`);
     svg.append(
-      svgEl('polygon', { points: `0,24 ${pts.join(' ')} 100,24`, class: 'sparkline-area' }),
-      svgEl('polyline', { points: pts.join(' '), class: 'sparkline-line' }),
+      svgEl('polygon', { points: `0,32 ${pts.join(' ')} 100,32`, class: 'sparkline-area' }),
+      svgEl('polyline', { points: pts.join(' '), class: 'sparkline-line', 'vector-effect': 'non-scaling-stroke' }),
     );
   }
   return svg;
@@ -167,37 +179,37 @@ function buildCharts(activity: Activity | null): HTMLElement {
   if (activity === null) return grid;
   const charts: ChartSpec[] = [
     {
-      title: 'usage by model ($)',
+      title: 'Usage by model ($)',
       unit: '$',
       columns: activity.columns,
       series: modelSeries(activity, (s) => s.costUsd),
     },
     {
-      title: 'request volume by model',
+      title: 'Request volume by model',
       columns: activity.columns,
       series: modelSeries(activity, (s) => s.requests),
     },
     {
-      title: 'token breakdown',
+      title: 'Token breakdown',
       columns: activity.columns,
       series: [
-        { key: 'prompt', name: 'prompt', color: '#3b82f6', values: activity.tokens.prompt },
-        { key: 'completion', name: 'completion', color: '#10b981', values: activity.tokens.completion },
-        { key: 'reasoning', name: 'reasoning', color: '#f59e0b', values: activity.tokens.reasoning },
+        { key: 'prompt', name: 'prompt', color: 'var(--accent)', values: activity.tokens.prompt },
+        { key: 'completion', name: 'completion', color: 'var(--green)', values: activity.tokens.completion },
+        { key: 'reasoning', name: 'reasoning', color: 'var(--orange)', values: activity.tokens.reasoning },
       ],
     },
     {
-      title: 'prompt token caching',
+      title: 'Prompt token caching',
       columns: activity.columns,
       series: [
-        { key: 'cached', name: 'cached', color: '#10b981', values: activity.caching.cached },
-        { key: 'uncached', name: 'uncached', color: '#f59e0b', values: activity.caching.uncached },
+        { key: 'cached', name: 'cached', color: 'var(--green)', values: activity.caching.cached },
+        { key: 'uncached', name: 'uncached', color: 'var(--orange)', values: activity.caching.uncached },
       ],
     },
   ];
   for (const spec of charts) {
     const panel = document.createElement('div');
-    panel.className = 'chart-panel';
+    panel.className = 'card chart-panel';
     const h = document.createElement('h3');
     h.textContent = spec.title;
     panel.append(h, stackedBars(spec.columns, spec.series, { unit: spec.unit, format: spec.unit === '$' ? formatCost : formatCount }), legendRow(spec.series));
@@ -215,7 +227,7 @@ export function modelSeries(
   return activity.models.map((model, i) => ({
     key: `${model}:${i}`,
     name: model,
-    color: PALETTE[i % PALETTE.length] ?? '#6b7280',
+    color: PALETTE[i % PALETTE.length] ?? 'var(--text-tertiary)',
     values: rows[i] ?? [],
   }));
 }
@@ -275,8 +287,9 @@ export function stackedBars(
         y,
         width: barW,
         height: Math.max(h, 0.5),
-        fill: s.color,
+        rx: 2,
       });
+      (rect as SVGElement & { style: CSSStyleDeclaration }).style.fill = s.color;
       const title = document.createElementNS(SVG_NS, 'title');
       title.textContent = `${axisLabel(columns, i)} · ${s.name}: ${format(v)}`;
       rect.append(title);
@@ -332,34 +345,44 @@ function axisLabel(columns: number[], i: number): string {
 
 function buildTable(activity: Activity | null): HTMLElement {
   const wrap = document.createElement('div');
-  wrap.className = 'activity-table-wrap';
+  wrap.className = 'card activity-table-wrap';
   if (activity === null) return wrap;
-  const table = document.createElement('table');
+  const table = document.createElement('div');
   table.className = 'activity-table';
-  const head = document.createElement('tr');
+  const head = document.createElement('div');
+  head.className = 'activity-row activity-row--head';
   for (const label of [
-    'model', 'provider', 'requests', 'prompt toks', 'output toks', 'cache hit',
-    'avg latency', 'out tok/s', '$/1M in', '$/1M out', 'effective $/1M', 'total cost',
+    'Model', 'Provider', 'Requests', 'Prompt', 'Output', 'Cache hit',
+    'Latency', 'Tok/s', '$/1M in', '$/1M out', 'Eff. $/1M', 'Cost',
   ]) {
-    const th = document.createElement('th');
+    const th = document.createElement('span');
+    th.className = 'section-cap';
     th.textContent = label;
     head.append(th);
   }
   table.append(head);
   if (activity.perModel.length === 0) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 12;
-    td.className = 'muted';
-    td.textContent = 'no usage in this range';
-    tr.append(td);
-    table.append(tr);
+    const empty = document.createElement('div');
+    empty.className = 'activity-empty footnote';
+    empty.textContent = 'No usage in this range.';
+    table.append(empty);
   }
-  for (const row of activity.perModel) {
-    const tr = document.createElement('tr');
+  activity.perModel.forEach((row, i) => {
+    const tr = document.createElement('div');
+    tr.className = 'activity-row footnote tabular';
+    const name = document.createElement('span');
+    name.className = 'activity-model';
+    const swatch = document.createElement('span');
+    swatch.className = 'legend-swatch';
+    swatch.style.background = PALETTE[activity.models.indexOf(row.model) % PALETTE.length] ?? PALETTE[i % PALETTE.length] ?? '';
+    const label = document.createElement('span');
+    label.className = 'mono';
+    label.textContent = row.model;
+    label.title = row.model;
+    name.append(swatch, label);
+    tr.append(name);
     for (const cell of [
-      row.model,
-      row.provider ?? '',
+      row.provider ?? '—',
       formatCount(row.requests),
       formatCount(row.promptTokens),
       formatCount(row.outputTokens),
@@ -371,12 +394,12 @@ function buildTable(activity: Activity | null): HTMLElement {
       `$${row.effectivePerM.toFixed(2)}`,
       formatCost(row.costUsd),
     ]) {
-      const td = document.createElement('td');
+      const td = document.createElement('span');
       td.textContent = cell;
       tr.append(td);
     }
     table.append(tr);
-  }
+  });
   wrap.append(table);
   return wrap;
 }

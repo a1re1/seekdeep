@@ -5,91 +5,147 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>seekdeep — agent transcript traces</title>
   <link rel="stylesheet" href="./styles.css" />
+  <script>
+    // Apply the persisted theme before first paint so the wallpaper never flashes.
+    (function () {
+      try {
+        var t = localStorage.getItem('seekdeep.theme');
+        if (t === 'dark' || (t === null && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (_) {}
+    })();
+  </script>
 </head>
 <body>
-  <header>
-    <h1>seekdeep</h1>
-    <span class="tagline">trace viewer for agent transcripts — static, local, no telemetry</span>
-    <nav id="page-nav" class="page-nav" aria-label="pages">
-      <button id="nav-trace" type="button" class="active" title="transcript waterfalls">trace</button>
-      <button id="nav-activity" type="button" title="usage across models and time">activity</button>
+  <header class="toolbar">
+    <div class="brand">
+      <span class="brand-name">seekdeep</span>
+      <span class="brand-sub">Trace viewer · static, local, no telemetry</span>
+    </div>
+    <nav id="page-nav" class="vt-seg" aria-label="pages">
+      <button id="nav-trace" type="button" aria-pressed="true" title="transcript waterfalls">Trace</button>
+      <button id="nav-activity" type="button" aria-pressed="false" title="usage across models and time">Activity</button>
     </nav>
-    <section id="drop-zone" tabindex="0">
-      <strong>drop JSONL transcripts here</strong>
-      <label class="button"><input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" />choose files…</label>
-      <button id="load-sample" type="button">Load sample</button>
-      <span id="drop-status" class="status"></span>
-    </section>
+    <span class="spacer"></span>
+    <span id="drop-status" class="status footnote"></span>
+    <div id="drop-zone" class="drop-pill" tabindex="0">Drop JSONL transcripts here</div>
+    <label class="vt-btn vt-btn--glass" for="file-input">Choose Files…<input type="file" id="file-input" multiple accept=".jsonl,.json,application/json,text/plain" /></label>
+    <button id="load-sample" type="button" class="vt-btn vt-btn--primary">Load Sample</button>
+    <span class="toolbar-divider" aria-hidden="true"></span>
+    <button id="theme-toggle" type="button" class="vt-btn vt-btn--plain vt-iconbtn icon-plain" aria-label="Toggle dark mode" title="toggle theme"></button>
+    <button id="nav-settings" type="button" class="vt-btn vt-btn--plain vt-iconbtn icon-plain" aria-label="Settings" aria-pressed="false" title="settings"></button>
   </header>
 
-  <details id="index-panel" open>
-    <summary id="index-summary">session index</summary>
-    <section id="index-view" aria-label="session index"></section>
-  </details>
+  <div class="content">
+    <!-- Session picker: shown on the Trace page while no session is open. -->
+    <section id="index-panel" class="glass-panel picker" aria-label="session index"></section>
 
-  <div id="session-tabs" hidden></div>
-
-  <main id="app" hidden>
-    <section id="summary-panel">
-      <div class="cards">
-        <div class="card"><span class="k">wall time</span><span class="v" id="s-wall">–</span></div>
-        <div class="card"><span class="k">model time</span><span class="v" id="s-model">–</span></div>
-        <div class="card"><span class="k">tool time</span><span class="v" id="s-tool">–</span></div>
-        <div class="card"><span class="k">idle time</span><span class="v" id="s-idle">–</span></div>
-        <div class="card"><span class="k">tokens in / rd / wr / out</span><span class="v" id="s-tokens">–</span></div>
-        <div class="card"><span class="k">cache hit</span><span class="v" id="s-hitrate">–</span></div>
-        <div class="card"><span class="k">est. cost</span><span class="v" id="s-cost">–</span></div>
-      </div>
-      <details id="details-panel"><summary>details: slowest spans · top tools · cost by model</summary><div id="details-body"></div></details>
-      <div id="warnings" class="warnings" hidden></div>
-    </section>
-
-    <section id="trace-section">
-      <div class="controls">
-        <button id="collapse-all" type="button">collapse all</button>
-        <button id="expand-all" type="button">expand all</button>
-        <span class="hint">click a row to inspect · double-click to zoom · ↑/↓ to move · Esc to clear · f for focus</span>
+    <!-- Trace screen -->
+    <main id="app" hidden>
+      <div id="session-tabs" class="vt-tabs session-tabs" hidden></div>
+      <nav class="crumbs" aria-label="session">
+        <button id="back-to-sessions" type="button" class="vt-btn vt-btn--glass vt-btn--s">‹ Sessions</button>
+        <span id="crumb-project" class="footnote crumb-project"></span>
+        <span class="crumb-sep" aria-hidden="true">›</span>
+        <span id="crumb-title" class="crumb-title"></span>
+        <span id="crumb-meta" class="caption mono crumb-meta"></span>
         <span class="spacer"></span>
-        <span id="breadcrumb" class="breadcrumb"></span>
-        <button id="zoom-out" type="button" disabled>⤴ zoom out</button>
-        <button id="focus-toggle" type="button" title="give the waterfall the whole window (f)">⤢ focus</button>
-      </div>
-      <div id="trace-layout" class="trace-layout">
-        <div class="trace-column">
-          <div id="trace" class="trace" aria-label="trace waterfall"></div>
-          <canvas id="cache-canvas" width="1200" height="48"></canvas>
-          <p class="legend">
-            <span class="sw model">model</span>
-            <span class="sw tool">tool</span>
-            <span class="sw turn">turn</span>
-            <span class="sw subagent">subagent</span>
-            <span class="sw session">lci session</span>
-            <span class="sw idle">idle</span>
-            <span class="sw other">other</span>
-            <span class="legend-sep">cache strip:</span>
-            <span class="sw seg-read">cache read</span>
-            <span class="sw seg-write">cache write</span>
-            <span class="sw seg-input">uncached</span>
-          </p>
+        <span id="breadcrumb" class="footnote breadcrumb"></span>
+      </nav>
+
+      <section id="summary-panel" class="summary">
+        <div class="stat-cards">
+          <div class="stat-card"><span class="stat-k">Wall time</span><span class="stat-v" id="s-wall">–</span><span class="stat-sub" id="s-wall-sub"></span></div>
+          <div class="stat-card"><span class="stat-k">Model time</span><span class="stat-v" id="s-model">–</span><span class="stat-sub" id="s-model-sub"></span></div>
+          <div class="stat-card"><span class="stat-k">Tool time</span><span class="stat-v" id="s-tool">–</span><span class="stat-sub" id="s-tool-sub"></span></div>
+          <div class="stat-card"><span class="stat-k">Idle time</span><span class="stat-v" id="s-idle">–</span><span class="stat-sub" id="s-idle-sub"></span></div>
+          <div class="stat-card"><span class="stat-k">Tokens</span><span class="stat-v" id="s-tokens">–</span><span class="stat-sub" id="s-tokens-sub"></span></div>
+          <div class="stat-card"><span class="stat-k">Cache hit</span><span class="stat-v" id="s-hitrate">–</span><span class="stat-sub" id="s-hitrate-sub"></span></div>
+          <div class="stat-card"><span class="stat-k">Est. cost</span><span class="stat-v" id="s-cost">–</span><span class="stat-sub" id="s-cost-sub"></span></div>
         </div>
-        <div id="trace-splitter" class="trace-splitter" role="separator" aria-orientation="vertical" title="drag to resize the detail pane"></div>
-        <aside id="detail-pane" class="detail-pane"><p class="muted empty">click a span to inspect it</p></aside>
+        <div id="warnings" class="warn-bar" hidden></div>
+        <details id="details-panel" class="card details"><summary class="footnote">Details · slowest spans · top tools · cost by model</summary><div id="details-body"></div></details>
+      </section>
+
+      <section id="trace-section" class="glass-panel trace-panel">
+        <div class="trace-column">
+          <div class="waterfall-head">
+            <nav id="expand-seg" class="vt-seg" aria-label="row expansion">
+              <button id="expand-default" type="button" aria-pressed="true">Default</button>
+              <button id="collapse-all" type="button" aria-pressed="false">Collapse</button>
+              <button id="expand-all" type="button" aria-pressed="false">Expand</button>
+            </nav>
+            <span class="hint footnote">Click a row to inspect · double-click to zoom · ↑↓ move · Esc clear · f focus</span>
+            <span class="spacer"></span>
+            <span id="span-count" class="footnote tabular"></span>
+            <button id="zoom-out" type="button" class="vt-btn vt-btn--glass vt-btn--s" disabled>Zoom Out</button>
+            <button id="focus-toggle" type="button" class="vt-btn vt-btn--glass vt-btn--s" title="give the waterfall the whole window (f)">⤢ Focus</button>
+          </div>
+          <div id="trace" class="trace" aria-label="trace waterfall"></div>
+          <div class="trace-foot">
+            <div class="cache-track"><canvas id="cache-canvas" width="1200" height="44"></canvas></div>
+            <p class="legend">
+              <span class="sw model">model</span>
+              <span class="sw tool">tool</span>
+              <span class="sw turn">turn</span>
+              <span class="sw subagent">subagent</span>
+              <span class="sw session">lci session</span>
+              <span class="sw idle">idle</span>
+              <span class="sw other">other</span>
+              <span class="legend-sep" aria-hidden="true"></span>
+              <span class="caption legend-cap">Cache</span>
+              <span class="sw dotted seg-read">read</span>
+              <span class="sw dotted seg-write">write</span>
+              <span class="sw dotted seg-input">uncached</span>
+            </p>
+          </div>
+        </div>
+        <div id="trace-splitter" class="trace-splitter" role="separator" aria-orientation="vertical" title="drag to resize the inspector"></div>
+        <aside id="detail-pane" class="detail-pane"><p class="muted empty">Click a span to inspect it</p></aside>
+        <div id="tooltip" class="tooltip" hidden></div>
+      </section>
+    </main>
+
+    <!-- Activity page -->
+    <section id="activity" hidden>
+      <div id="activity-host"></div>
+    </section>
+
+    <!-- Settings page -->
+    <section id="settings" hidden>
+      <div class="page-head">
+        <span class="page-title">Settings</span>
+        <span class="footnote">Saved locally in this browser</span>
       </div>
-      <div id="tooltip" class="tooltip" hidden></div>
-    </section>
-
-  </main>
-
-  <section id="activity" hidden>
-    <div id="activity-host"></div>
-    <section id="pricing-section">
-      <details>
-        <summary>pricing editor <span class="hint">(USD per 1M tokens, saved to localStorage — charts and costs re-price instantly)</span></summary>
+      <section id="pricing-section" class="card settings-card">
+        <div class="settings-row settings-row--head">
+          <div class="settings-text">
+            <span class="settings-title">Pricing</span>
+            <span class="footnote">USD per 1M tokens. Charts and costs re-price instantly.</span>
+          </div>
+          <button id="pricing-reset" type="button" class="vt-btn vt-btn--glass vt-btn--s">Reset to Defaults</button>
+        </div>
         <div id="pricing-table"></div>
-        <button id="pricing-reset" type="button">reset to defaults</button>
-      </details>
+      </section>
+      <section class="card settings-card">
+        <div class="settings-row">
+          <div class="settings-text">
+            <span class="settings-title">Appearance</span>
+            <span class="footnote">Dark mode</span>
+          </div>
+          <label class="vt-switch"><input id="theme-switch" type="checkbox" aria-label="Dark mode" /></label>
+        </div>
+        <div class="settings-row">
+          <div class="settings-text">
+            <span class="settings-title">Transcript sources</span>
+            <span id="sources-summary" class="footnote mono">~/.claude · ~/.lci</span>
+          </div>
+          <button id="sources-rescan" type="button" class="vt-btn vt-btn--glass vt-btn--s">Rescan</button>
+        </div>
+      </section>
     </section>
-  </section>
+  </div>
 
   <script type="module" src="./main.js"></script>
 </body>
