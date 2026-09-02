@@ -11,6 +11,10 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/sql.js": "^1.4.11",
     "typescript": "^5"
+  },
+  "dependencies": {
+    "sql.js": "1.14.2"
   }
 }

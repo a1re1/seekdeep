@@ -1,4 +1,4 @@
-// Pure, testable scanning of Claude Code and lci directories into
+// Pure, testable scanning of Claude Code, lci, pi and OpenCode sources into
 // SessionEntry records. Only the first 64 KiB (head) and last 16 KiB (tail)
 // of each transcript are read: the head carries cwd/branch/title/start, the
 // tail the last timestamp. Files are scanned in small batches so large
@@ -9,6 +9,8 @@
 // the header records needed to decide whether the file is worth scanning.
 
 import type { SourceFile, SourceKind } from './fs.ts';
+import { openOpencodeDb } from './opencode-db.ts';
+import type { OcSession } from './opencode-db.ts';
 import { parseTs, tryParse } from '../parsers/util.ts';
 
 export interface SessionEntry {
@@ -54,6 +56,85 @@ export async function scanLci(
   return keepScanned(entries);
 }
 
+export async function scanPi(
+  files: SourceFile[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<SessionEntry[]> {
+  const entries = await mapBatched(piTranscripts(files), scanPiFile, onProgress);
+  return keepScanned(entries);
+}
+
+/**
+ * OpenCode sessions come from one SQLite database rather than files: every
+ * root session becomes an entry whose `file` is a virtual transcript built
+ * from the database on demand (child sessions fold into their root).
+ */
+export async function scanOpencode(
+  files: SourceFile[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<SessionEntry[]> {
+  const db = await openOpencodeDb(files);
+  if (db === null) {
+    onProgress?.(0, 0);
+    return [];
+  }
+  const sessions = db.sessions();
+  const byId = new Map(sessions.map((s) => [s.id, s] as const));
+  // A child whose parent row is gone is still worth opening: treat it as a root.
+  const roots = sessions.filter((s) => s.parentId === null || !byId.has(s.parentId));
+  onProgress?.(0, roots.length);
+  const dbPath = files.find((f) => f.name === 'opencode.db')?.path ?? 'opencode.db';
+  // Subtree size / last update: children count toward their root.
+  const sizes = db.sizes();
+  const rootOf = (s: OcSession): string => {
+    let cur = s;
+    for (let hops = 0; cur.parentId !== null && hops < 32; hops++) {
+      const parent = byId.get(cur.parentId);
+      if (parent === undefined) break;
+      cur = parent;
+    }
+    return cur.id;
+  };
+  const subtreeSize = new Map<string, number>();
+  const subtreeEnd = new Map<string, number>();
+  for (const s of sessions) {
+    const root = rootOf(s);
+    subtreeSize.set(root, (subtreeSize.get(root) ?? 0) + (sizes.get(s.id) ?? 0));
+    subtreeEnd.set(root, Math.max(subtreeEnd.get(root) ?? 0, s.updatedMs, s.createdMs));
+  }
+  const entries = roots.map((s): SessionEntry => {
+    const path = `${dbPath}#${s.id}`;
+    const sizeBytes = subtreeSize.get(s.id) ?? 0;
+    const endMs = subtreeEnd.get(s.id) ?? s.createdMs;
+    let text: string | null = null;
+    const file: SourceFile = {
+      path,
+      name: `${s.id}.jsonl`,
+      size: sizeBytes,
+      lastModified: endMs,
+      text: async (range) => {
+        if (text === null) text = db.transcript(s.id);
+        return text.slice(range?.start ?? 0, range?.end ?? text.length);
+      },
+    };
+    return {
+      kind: 'opencode',
+      id: s.id,
+      path,
+      slug: s.slug,
+      cwd: s.directory.length > 0 ? s.directory : null,
+      branch: null,
+      title: clip(s.title),
+      startMs: s.createdMs,
+      endMs: Math.max(endMs, s.createdMs),
+      sizeBytes,
+      file,
+    };
+  });
+  onProgress?.(roots.length, roots.length);
+  return entries;
+}
+
 // ---- file selection ------------------------------------------------------
 
 /** `<projects>/<slug>/<id>.jsonl` — only files directly inside a slug dir. */
@@ -72,6 +153,16 @@ export function lciTranscripts(files: SourceFile[]): SourceFile[] {
     const parts = f.path.split('/');
     const i = parts.length - 1;
     return i >= 3 && parts[i] === 'transcript.jsonl' && parts[i - 2] === 'sessions';
+  });
+}
+
+/** `<sessions>/<cwd-dir>/<timestamp>_<id>.jsonl` — only files directly inside a cwd dir. */
+export function piTranscripts(files: SourceFile[]): SourceFile[] {
+  return files.filter((f) => {
+    if (!f.name.endsWith('.jsonl')) return false;
+    const parts = f.path.split('/');
+    const i = parts.lastIndexOf('sessions');
+    return i >= 0 && parts.length - i === 3;
   });
 }
 
@@ -265,6 +356,85 @@ async function readSibling(
   const f = byPath.get(path);
   if (f === undefined) return null;
   return tryParse(await f.text());
+}
+
+// ---- pi ------------------------------------------------------------------
+
+async function scanPiFile(file: SourceFile): Promise<SessionEntry | null> {
+  try {
+    const parts = file.path.split('/');
+    const slug = parts[parts.length - 2] ?? '';
+    const { head, tail } = await readHeadTail(file);
+    const h = piHead(head);
+    let endMs = lastTs(tail, 'timestamp');
+    if (Number.isNaN(endMs)) endMs = lastTs(head, 'timestamp');
+    let startMs = h.startMs;
+    if (Number.isNaN(startMs)) startMs = firstTs(head, 'timestamp');
+    if (Number.isNaN(startMs)) startMs = endMs;
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
+    // File names are `<timestamp>_<id>.jsonl`; the header id wins when present.
+    const stem = file.name.replace(/\.jsonl$/, '');
+    const id = h.id ?? stem.slice(stem.indexOf('_') + 1);
+    return {
+      kind: 'pi',
+      id,
+      path: file.path,
+      slug,
+      cwd: h.cwd,
+      branch: null,
+      title: h.title,
+      startMs,
+      endMs: Math.max(endMs, startMs),
+      sizeBytes: file.size,
+      file,
+    };
+  } catch {
+    return null; // unreadable file → skip, never throw
+  }
+}
+
+interface PiHead {
+  id: string | null;
+  cwd: string | null;
+  title: string;
+  startMs: number;
+}
+
+/** The `session` header (id, cwd, timestamp) and the first user prompt. */
+function piHead(head: string): PiHead {
+  const out: PiHead = { id: null, cwd: null, title: '', startMs: NaN };
+  for (const line of head.split('\n')) {
+    const rec = tryParse(line);
+    if (rec === null) continue;
+    if (rec.type === 'session') {
+      if (typeof rec.id === 'string' && rec.id.length > 0) out.id = rec.id;
+      if (typeof rec.cwd === 'string' && rec.cwd.length > 0) out.cwd = rec.cwd;
+      const ts = parseTs(rec.timestamp);
+      if (Number.isFinite(ts)) out.startMs = ts;
+      continue;
+    }
+    if (out.title === '' && rec.type === 'message') {
+      const msg = rec.message;
+      if (msg !== null && typeof msg === 'object' && !Array.isArray(msg)) {
+        const m = msg as Record<string, unknown>;
+        if (m.role === 'user') out.title = piText(m.content) ?? '';
+      }
+    }
+    if (out.title !== '' && out.id !== null) break;
+  }
+  return out;
+}
+
+function piText(content: unknown): string | null {
+  if (typeof content === 'string') return titleText(content);
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (block !== null && typeof block === 'object' && !Array.isArray(block)) {
+      const b = block as Record<string, unknown>;
+      if (b.type === 'text' && typeof b.text === 'string') return titleText(b.text);
+    }
+  }
+  return null;
 }
 
 // ---- shared helpers ------------------------------------------------------

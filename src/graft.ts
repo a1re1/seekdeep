@@ -1,9 +1,9 @@
-// Grafting a child harness session (an lci run) into the Claude Code span
-// tree that launched it, so one waterfall shows the whole multi-harness
-// journey. Pure: no I/O, no DOM.
+// Grafting a child harness session (an lci run) into the span tree of the
+// host session (Claude Code, OpenCode or pi) that launched it, so one
+// waterfall shows the whole multi-harness journey. Pure: no I/O, no DOM.
 //
 // Host selection, in order:
-//   1. the Bash tool span whose command mentions `lci` and whose window
+//   1. the shell tool span whose command mentions `lci` and whose window
 //      (± LAUNCH_SLACK_MS) contains the child's start — the latest such
 //      launch that started before the child wins;
 //   2. the turn active when the child started (the last turn that began
@@ -12,8 +12,21 @@
 
 import type { Session, Span } from './model.ts';
 import { flatten } from './model.ts';
+import { SOURCE_KINDS, isHostKind } from './index/fs.ts';
+import type { SourceKind } from './index/fs.ts';
+import { harnessOf } from './stats.ts';
 
 export const LAUNCH_SLACK_MS = 5_000;
+
+/**
+ * Transcript formats whose sessions can launch lci and so host grafted
+ * children: the same rule as the index's `isHostKind`, applied to the
+ * format's harness label (formats the index cannot connect never host).
+ */
+export function isHostFormat(format: Session['format']): boolean {
+  const kind = harnessOf(format);
+  return (SOURCE_KINDS as string[]).includes(kind) && isHostKind(kind as SourceKind);
+}
 
 export interface ChildRef {
   id: string;

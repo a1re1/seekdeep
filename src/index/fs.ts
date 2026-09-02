@@ -3,6 +3,9 @@
 // reloads) and falls back to a hidden <input webkitdirectory> when the API
 // is unavailable. Nothing is ever uploaded; files are read locally.
 
+/** OpenCode's SQLite database (with its write-ahead log alongside). */
+export const OPENCODE_DB = 'opencode.db';
+
 export interface SourceFile {
   /** Path relative to the picked directory, '/'-separated. */
   path: string;
@@ -11,9 +14,35 @@ export interface SourceFile {
   lastModified: number;
   /** Read a byte range (whole file when omitted) without loading it all. */
   text(range?: { start?: number; end?: number }): Promise<string>;
+  /** Whole-file bytes (binary sources such as OpenCode's SQLite database). */
+  bytes?(): Promise<Uint8Array>;
 }
 
-export type SourceKind = 'claude' | 'lci';
+export type SourceKind = 'claude' | 'lci' | 'opencode' | 'pi';
+
+export interface SourceSpec {
+  /** Where the harness keeps its data, shown as the source label. */
+  label: string;
+  /** Subdirectory holding sessions; walked when present, else the pick itself. */
+  sessionsDir: string | null;
+  /** How deep to walk below the sessions dir (0 = only its direct files). */
+  maxDepth: number;
+}
+
+/** Every harness the index can connect, in display order. */
+export const SOURCES: Record<SourceKind, SourceSpec> = {
+  claude: { label: '~/.claude', sessionsDir: 'projects', maxDepth: 8 },
+  lci: { label: '~/.lci', sessionsDir: 'projects', maxDepth: 8 },
+  opencode: { label: '~/.local/share/opencode', sessionsDir: null, maxDepth: 0 },
+  pi: { label: '~/.pi/agent', sessionsDir: 'sessions', maxDepth: 8 },
+};
+
+export const SOURCE_KINDS = Object.keys(SOURCES) as SourceKind[];
+
+/** Whether sessions of this kind can launch lci (and so host lci children). */
+export function isHostKind(kind: SourceKind): boolean {
+  return kind !== 'lci';
+}
 
 // ---- File System Access API, typed locally (no dependencies) -------------
 
@@ -37,11 +66,10 @@ type PickerWindow = {
 };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'outputs', 'images']);
-const MAX_DEPTH = 8;
-// Both layouts keep sessions under projects/; the rest of ~/.claude (caches,
-// shell snapshots, plugins…) is thousands of files we never need to stat.
-const SESSIONS_DIR = 'projects';
-const WANTED_FILES = new Set(['session.json', 'result.json']);
+// Claude/lci keep sessions under projects/, pi under sessions/; the rest of
+// each home (caches, shell snapshots, plugins, OpenCode's snapshot/ and log/
+// trees…) is thousands of files we never need to stat.
+const WANTED_FILES = new Set(['session.json', 'result.json', OPENCODE_DB, `${OPENCODE_DB}-wal`]);
 
 function isWanted(name: string): boolean {
   return name.endsWith('.jsonl') || WANTED_FILES.has(name);
@@ -62,9 +90,9 @@ export async function pickDirectory(kind: SourceKind): Promise<SourceFile[] | nu
       return null; // user cancelled (or the request was denied)
     }
     await saveHandle(kind, handle);
-    return walkHandle(handle);
+    return walkHandle(handle, kind);
   }
-  return pickWithInput();
+  return pickWithInput(kind);
 }
 
 /**
@@ -87,7 +115,7 @@ export async function restoreDirectory(kind: SourceKind): Promise<SourceFile[] |
   if (handle === null) return null;
   if (!(await hasReadPermission(handle))) return null;
   try {
-    return await walkHandle(handle);
+    return await walkHandle(handle, kind);
   } catch {
     return null; // stored directory may be gone or renamed
   }
@@ -100,22 +128,25 @@ export async function forgetDirectory(kind: SourceKind): Promise<void> {
 // ---- walking -------------------------------------------------------------
 
 /**
- * Walk `<dir>/projects` when it exists, else the pick itself (the user may
- * have picked `projects/` directly — keep that segment so scan.ts's path
+ * Walk `<dir>/<sessionsDir>` when it exists, else the pick itself (the user
+ * may have picked `projects/` directly — keep that segment so scan.ts's path
  * contract `projects/<slug>/…` still holds). Only transcript-related files
  * are collected.
  */
-async function walkHandle(dir: FsDirHandle): Promise<SourceFile[]> {
+async function walkHandle(dir: FsDirHandle, kind: SourceKind): Promise<SourceFile[]> {
+  const spec = SOURCES[kind];
   let root = dir;
-  let prefix = dir.name === SESSIONS_DIR ? `${SESSIONS_DIR}/` : '';
-  try {
-    root = await dir.getDirectoryHandle(SESSIONS_DIR);
-    prefix = `${SESSIONS_DIR}/`;
-  } catch {
-    // no projects/ subdirectory: walk what was picked
+  let prefix = spec.sessionsDir !== null && dir.name === spec.sessionsDir ? `${spec.sessionsDir}/` : '';
+  if (spec.sessionsDir !== null) {
+    try {
+      root = await dir.getDirectoryHandle(spec.sessionsDir);
+      prefix = `${spec.sessionsDir}/`;
+    } catch {
+      // no sessions subdirectory: walk what was picked
+    }
   }
   const out: SourceFile[] = [];
-  await walk(root, prefix, out, 0);
+  await walk(root, prefix, out, 0, spec.maxDepth);
   return out;
 }
 
@@ -124,8 +155,9 @@ async function walk(
   prefix: string,
   out: SourceFile[],
   depth: number,
+  maxDepth: number,
 ): Promise<void> {
-  if (depth > MAX_DEPTH) return;
+  if (depth > maxDepth) return;
   const subdirs: FsDirHandle[] = [];
   const files: Promise<SourceFile>[] = [];
   for await (const entry of dir.values()) {
@@ -136,7 +168,7 @@ async function walk(
     }
   }
   out.push(...(await Promise.all(files)));
-  for (const sub of subdirs) await walk(sub, `${prefix}${sub.name}/`, out, depth + 1);
+  for (const sub of subdirs) await walk(sub, `${prefix}${sub.name}/`, out, depth + 1, maxDepth);
 }
 
 export function makeSourceFile(file: File, path: string): SourceFile {
@@ -150,12 +182,14 @@ export function makeSourceFile(file: File, path: string): SourceFile {
       const end = Math.max(start, Math.min(range?.end ?? file.size, file.size));
       return file.slice(start, end).text();
     },
+    bytes: async (): Promise<Uint8Array> => new Uint8Array(await file.arrayBuffer()),
   };
 }
 
 // ---- <input webkitdirectory> fallback (nothing persisted) ----------------
 
-function pickWithInput(): Promise<SourceFile[] | null> {
+function pickWithInput(kind: SourceKind): Promise<SourceFile[] | null> {
+  const sessionsDir = SOURCES[kind].sessionsDir;
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -173,8 +207,8 @@ function pickWithInput(): Promise<SourceFile[] | null> {
         const segments = rel.split('/');
         const picked = segments.length > 1 ? segments.shift() : undefined;
         if (segments.some((s) => SKIP_DIRS.has(s))) continue;
-        // Keep a leading projects/ when the user picked that directory itself.
-        const path = (picked === SESSIONS_DIR ? [picked, ...segments] : segments).join('/');
+        // Keep a leading projects/ (sessions/) when the user picked that directory itself.
+        const path = (picked !== undefined && picked === sessionsDir ? [picked, ...segments] : segments).join('/');
         out.push(makeSourceFile(file, path));
       }
       resolve(out.length > 0 ? out : null);

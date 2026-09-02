@@ -5,12 +5,16 @@ import { parseClaudeCode } from './claude-code.ts';
 import { parseCodex } from './codex.ts';
 import { parseGeneric } from './generic.ts';
 import { parseLci } from './lci.ts';
+import { flattenOpencodeExport, parseOpencode } from './opencode.ts';
+import { parsePi } from './pi.ts';
 import { tryParse } from './util.ts';
 
 export function detectFormat(lines: string[]): Session['format'] {
   let sawClaude = false;
   let sawLci = false;
   let sawCodex = false;
+  let sawOpencode = false;
+  let sawPi = false;
 
   // Inspect the first 50 non-empty, JSON-parseable lines.
   let inspected = 0;
@@ -24,6 +28,19 @@ export function detectFormat(lines: string[]): Session['format'] {
 
     const type = record['type'];
     if (typeof type !== 'string') continue;
+
+    // Flattened OpenCode records: {"type":"opencode.session"|"opencode.message"|"opencode.part","data":{…}}.
+    if (type.startsWith('opencode.') && record['data'] !== null && typeof record['data'] === 'object') {
+      sawOpencode = true;
+    }
+
+    // pi: a session header, or tree entries carrying id/parentId + message.
+    if (
+      (type === 'session' && typeof record['cwd'] === 'string' && typeof record['id'] === 'string') ||
+      (type === 'message' && record['parentId'] !== undefined && record['message'] !== null && typeof record['message'] === 'object')
+    ) {
+      sawPi = true;
+    }
 
     if (
       (type === 'assistant' || type === 'user') &&
@@ -57,10 +74,15 @@ export function detectFormat(lines: string[]): Session['format'] {
   if (sawClaude) return 'claude-code';
   if (sawLci) return 'lci';
   if (sawCodex) return 'codex';
+  if (sawOpencode) return 'opencode';
+  if (sawPi) return 'pi';
   return 'generic';
 }
 
 export function parseTranscript(text: string, fileName: string): Session {
+  // A dropped `opencode export` JSON document becomes flattened records first.
+  const flat = flattenOpencodeExport(text);
+  if (flat !== null) text = flat;
   const allLines = text.split('\n');
   const format = detectFormat(allLines);
 
@@ -83,6 +105,12 @@ export function parseTranscript(text: string, fileName: string): Session {
         break;
       case 'codex':
         session = parseCodex(text, fileName);
+        break;
+      case 'opencode':
+        session = parseOpencode(text, fileName);
+        break;
+      case 'pi':
+        session = parsePi(text, fileName);
         break;
       default:
         session = parseGeneric(text, fileName);
