@@ -1,4 +1,4 @@
-// Detail pane: what a selected span actually contained.
+// Inspector pane: what a selected span actually contained.
 //
 // Tool spans show their full input and output. Model spans show the token
 // split of the prompt (cached prefix / newly cached / uncached), the "new
@@ -10,9 +10,10 @@ import type { ContextItem, Session, Span } from '../model.ts';
 import { cacheHitRate, durationMs, flatten, selfTimeMs, sumUsage } from '../model.ts';
 import { el } from './dom.ts';
 import { formatCost, formatCount, formatDuration, formatPct } from './format.ts';
+import { icon } from './icons.ts';
 
 export interface DetailActions {
-  select: (span: Span) => void;
+  select: (span: Span | null) => void;
   zoom: (span: Span) => void;
   parentOf: (span: Span) => Span | null;
   /** Open a grafted child-harness session (lci) in its own tab. */
@@ -21,58 +22,71 @@ export interface DetailActions {
 
 export function renderEmptyDetail(pane: HTMLElement): void {
   pane.textContent = '';
-  pane.append(el('p', { class: 'muted empty' }, 'click a span to inspect it'));
+  pane.append(el('p', { class: 'muted empty' }, 'Click a span to inspect it'));
 }
 
 export function renderDetail(pane: HTMLElement, span: Span, session: Session, actions: DetailActions): void {
   pane.textContent = '';
   const parent = actions.parentOf(span);
   const offset = span.startMs - session.root.startMs;
+  const kind = span.meta?.harness === 'lci' ? 'session' : span.kind;
 
-  pane.append(
+  const head = el(
+    'div',
+    { class: 'detail-head' },
+    el('span', { class: `vt-tag tag-${kind}` }, kind === 'session' ? 'lci' : span.kind),
+    el('span', { class: 'detail-title', title: span.name }, span.name),
     el(
-      'div',
-      { class: 'detail-head' },
-      el('span', { class: `sw ${span.kind}` }, span.kind),
-      el('h3', { title: span.name }, span.name),
+      'button',
+      { type: 'button', class: 'vt-btn vt-btn--plain vt-iconbtn vt-btn--s', 'aria-label': 'Clear selection', title: 'clear selection (Esc)', onclick: (() => actions.select(null)) as EventListener },
+      icon('x', 13),
     ),
+  );
+  const body = el('div', { class: 'detail-body' });
+  pane.append(head, body);
+
+  body.append(
     kv([
-      ['duration', formatDuration(durationMs(span))],
-      ['self time', formatDuration(selfTimeMs(span))],
-      ['starts at', `+${formatDuration(offset)}`],
+      ['Duration', formatDuration(durationMs(span))],
+      ['Self time', formatDuration(selfTimeMs(span))],
+      ['Starts at', `+${formatDuration(offset)}`],
     ]),
     el(
       'div',
       { class: 'detail-actions' },
-      el('button', { type: 'button', onclick: (() => actions.zoom(span)) as EventListener }, '⤵ zoom here'),
-      parent !== null
-        ? el('button', { type: 'button', onclick: (() => actions.select(parent)) as EventListener }, '↑ parent')
-        : null,
+      btn('Zoom Here', () => actions.zoom(span)),
+      btn('Parent', () => {
+        if (parent !== null) actions.select(parent);
+      }, parent === null),
       span.meta?.harness === 'lci' && actions.openSession !== undefined
-        ? el('button', { type: 'button', onclick: (() => actions.openSession?.(span)) as EventListener }, '⧉ open lci session in a tab')
+        ? btn('Open lci session', () => actions.openSession?.(span))
         : null,
     ),
   );
   if (span.meta?.harness === 'lci') {
-    pane.append(
+    body.append(
       kv([
-        ['harness', 'lci'],
-        ['session', String(span.meta.lciSessionId ?? '')],
-        ['launched by', String(span.meta.launchedBy ?? '')],
+        ['Harness', 'lci'],
+        ['Session', String(span.meta.lciSessionId ?? '')],
+        ['Launched by', String(span.meta.launchedBy ?? '')],
       ]),
     );
   }
 
   switch (span.kind) {
     case 'model':
-      renderModel(pane, span);
+      renderModel(body, span);
       break;
     case 'tool':
-      renderTool(pane, span);
+      renderTool(body, span);
       break;
     default:
-      renderContainer(pane, span, actions);
+      renderContainer(body, span, actions);
   }
+}
+
+function btn(label: string, onclick: () => void, disabled = false): HTMLElement {
+  return el('button', { type: 'button', class: 'vt-btn vt-btn--glass vt-btn--s', disabled, onclick: onclick as EventListener }, label);
 }
 
 // ---- model ----------------------------------------------------------------
@@ -81,62 +95,58 @@ function renderModel(pane: HTMLElement, span: Span): void {
   const u = span.usage;
   const p = span.payload;
   const rows: Array<[string, string]> = [];
-  if (span.model !== undefined) rows.push(['model', span.model]);
-  if (span.provider !== undefined) rows.push(['provider', span.provider]);
-  if (p?.stopReason !== undefined) rows.push(['stop reason', p.stopReason]);
-  if (span.costUsd !== undefined) rows.push(['est. cost', formatCost(span.costUsd)]);
+  if (span.model !== undefined) rows.push(['Model', span.model]);
+  if (span.provider !== undefined) rows.push(['Provider', span.provider]);
+  if (p?.stopReason !== undefined) rows.push(['Stop reason', p.stopReason]);
+  if (span.costUsd !== undefined) rows.push(['Est. cost', formatCost(span.costUsd)]);
   if (rows.length > 0) pane.append(kv(rows));
 
   if (u !== undefined) {
     const prompt = u.cacheRead + u.cacheWrite + u.input;
     pane.append(
-      el('h4', null, `prompt · ${formatCount(prompt)} tokens · ${formatPct(cacheHitRate(u))} cached`),
-      tokenBar([
-        ['cached prefix', u.cacheRead, 'seg-read'],
-        ['newly cached', u.cacheWrite, 'seg-write'],
-        ['uncached', u.input, 'seg-input'],
-      ]),
-      kv([
-        ['cached prefix (cache read)', formatCount(u.cacheRead)],
-        ['newly cached (cache write)', cacheWriteText(u)],
-        ['uncached input', formatCount(u.input)],
-        ['output', formatCount(u.output)],
-        ...(u.reasoning !== undefined && u.reasoning > 0 ? ([['of which reasoning', formatCount(u.reasoning)]] as Array<[string, string]>) : []),
-      ]),
+      section(
+        'Cache',
+        tokenBar([
+          ['cached prefix', u.cacheRead, 'seg-read'],
+          ['newly cached', u.cacheWrite, 'seg-write'],
+          ['uncached', u.input, 'seg-input'],
+        ]),
+        el('span', { class: 'caption muted' }, `${formatCount(prompt)} prompt tokens · ${formatPct(cacheHitRate(u))} served from cache`),
+        kv([
+          ['Cached prefix', formatCount(u.cacheRead)],
+          ['Newly cached', cacheWriteText(u)],
+          ['Uncached input', formatCount(u.input)],
+          ['Output', formatCount(u.output)],
+          ...(u.reasoning !== undefined && u.reasoning > 0 ? ([['of which reasoning', formatCount(u.reasoning)]] as Array<[string, string]>) : []),
+        ]),
+      ),
     );
   }
 
   if (p?.newContext === undefined) {
-    pane.append(
-      el('h4', null, 'new context this call'),
-      el('p', { class: 'muted' }, 'this transcript format does not record the prompt contents'),
-    );
+    pane.append(section('New context this call', el('p', { class: 'muted caption' }, 'this transcript format does not record the prompt contents')));
   } else {
     const items = p.newContext;
     const chars = items.reduce((a, i) => a + i.chars, 0);
     pane.append(
-      el(
-        'h4',
-        null,
-        `new context this call · ${items.length} item${items.length === 1 ? '' : 's'} · ≈${formatCount(Math.round(chars / 4))} tokens`,
+      section(
+        `New context · ${items.length} item${items.length === 1 ? '' : 's'} · ≈${formatCount(Math.round(chars / 4))} tokens`,
+        el(
+          'p',
+          { class: 'muted caption' },
+          'records appended since the previous model call — the part of the prompt that could not be served from cache. Token estimate is chars ÷ 4.',
+        ),
+        items.length === 0
+          ? el('p', { class: 'muted caption' }, 'nothing new — same prompt as the previous call')
+          : el('div', { class: 'context-list' }, ...items.map(contextItemEl)),
       ),
-      el(
-        'p',
-        { class: 'muted small' },
-        'records appended to the conversation since the previous model call — the part of the prompt that could not be served from cache. Token estimate is chars ÷ 4.',
-      ),
-      items.length === 0
-        ? el('p', { class: 'muted' }, 'nothing new — same prompt as the previous call')
-        : el('div', { class: 'context-list' }, ...items.map(contextItemEl)),
     );
   }
 
-  if (p?.output !== undefined && p.output.length > 0) {
-    pane.append(el('h4', null, 'output'), pre(p.output));
-  }
+  if (p?.output !== undefined && p.output.length > 0) pane.append(section('Output', pre(p.output)));
   if (p?.thinking !== undefined && p.thinking.length > 0) {
     pane.append(
-      el('details', null, el('summary', null, `thinking · ${formatCount(p.thinking.length)} chars`), pre(p.thinking)),
+      el('details', { class: 'detail-fold' }, el('summary', { class: 'section-cap' }, `Thinking · ${formatCount(p.thinking.length)} chars`), pre(p.thinking)),
     );
   }
   if (p?.truncated === true) pane.append(truncatedNote());
@@ -150,7 +160,7 @@ function cacheWriteText(u: NonNullable<Span['usage']>): string {
 }
 
 function contextItemEl(item: ContextItem): HTMLElement {
-  const status = item.ok === false ? el('span', { class: 'badge failed' }, 'error') : null;
+  const status = item.ok === false ? el('span', { class: 'vt-tag tag-failed' }, 'error') : null;
   return el(
     'details',
     { class: `context-item role-${item.role}` },
@@ -162,7 +172,7 @@ function contextItemEl(item: ContextItem): HTMLElement {
       el('span', { class: 'label' }, item.label),
       ' ',
       status,
-      el('span', { class: 'muted small' }, ` ${formatCount(item.chars)} chars · ≈${formatCount(Math.round(item.chars / 4))} tok`),
+      el('span', { class: 'muted caption' }, ` ${formatCount(item.chars)} chars · ≈${formatCount(Math.round(item.chars / 4))} tok`),
     ),
     pre(item.text),
   );
@@ -173,25 +183,22 @@ function contextItemEl(item: ContextItem): HTMLElement {
 function renderTool(pane: HTMLElement, span: Span): void {
   const p = span.payload;
   const rows: Array<[string, string]> = [
-    ['tool', span.toolName ?? span.name],
-    ['status', span.ok === false ? 'failed' : span.ok === true ? 'ok' : 'unknown'],
+    ['Tool', span.toolName ?? span.name],
+    ['Status', span.ok === false ? 'failed' : span.ok === true ? 'ok' : 'unknown'],
   ];
   if (span.meta?.background === true) {
     rows.push([
-      'background task',
+      'Background task',
       span.meta.finishedMs !== undefined
         ? `${String(span.meta.taskId ?? '')} · ran ${formatDuration(durationMs(span))} until its notification`
         : `${String(span.meta.taskId ?? '')} · no completion notification seen`,
     ]);
   }
-  if (span.meta?.spawned === 'lci') rows.push(['spawned', 'an lci session (nested below)']);
+  if (span.meta?.spawned === 'lci') rows.push(['Spawned', 'an lci session (nested below)']);
   pane.append(kv(rows));
   const input = p?.input ?? span.toolInput;
-  pane.append(el('h4', null, 'input'), input !== undefined && input.length > 0 ? pre(input) : el('p', { class: 'muted' }, 'not recorded'));
-  pane.append(
-    el('h4', null, 'output'),
-    p?.output !== undefined && p.output.length > 0 ? pre(p.output) : el('p', { class: 'muted' }, 'not recorded'),
-  );
+  pane.append(section('Input', input !== undefined && input.length > 0 ? pre(input) : el('p', { class: 'muted caption' }, 'not recorded')));
+  pane.append(section('Output', p?.output !== undefined && p.output.length > 0 ? pre(p.output) : el('p', { class: 'muted caption' }, 'not recorded')));
   if (p?.truncated === true) pane.append(truncatedNote());
 }
 
@@ -204,40 +211,49 @@ function renderContainer(pane: HTMLElement, span: Span, actions: DetailActions):
   const u = sumUsage(models);
   const rollup = span.meta?.costRollupUsd;
   const rows: Array<[string, string]> = [
-    ['descendants', `${all.length} (${models.length} model, ${tools.length} tool)`],
+    ['Descendants', `${all.length} (${models.length} model, ${tools.length} tool)`],
   ];
+  if (models.length > 0) rows.push(['Output tokens', formatCount(u.output)]);
+  if (rollup !== undefined && Number(rollup) > 0) rows.push(['Est. cost (incl. children)', formatCost(Number(rollup))]);
+  pane.append(kv(rows));
   if (models.length > 0) {
-    rows.push(
-      ['prompt tokens', `${formatCount(u.cacheRead)} cached · ${formatCount(u.cacheWrite)} written · ${formatCount(u.input)} uncached`],
-      ['output tokens', formatCount(u.output)],
-      ['cache hit', formatPct(cacheHitRate(u))],
+    pane.append(
+      section(
+        'Cache',
+        tokenBar([
+          ['cached prefix', u.cacheRead, 'seg-read'],
+          ['newly cached', u.cacheWrite, 'seg-write'],
+          ['uncached', u.input, 'seg-input'],
+        ]),
+        el(
+          'span',
+          { class: 'caption muted' },
+          `${formatCount(u.cacheRead)} cached · ${formatCount(u.cacheWrite)} written · ${formatCount(u.input)} uncached · ${formatPct(cacheHitRate(u))} hit`,
+        ),
+      ),
     );
   }
-  if (rollup !== undefined && Number(rollup) > 0) rows.push(['est. cost (incl. children)', formatCost(Number(rollup))]);
-  pane.append(kv(rows));
-  if (span.detail !== undefined && span.detail.length > 0) pane.append(el('h4', null, 'detail'), pre(span.detail));
+  if (span.detail !== undefined && span.detail.length > 0) pane.append(section('Detail', pre(span.detail)));
 
   const kids = [...span.children].sort((a, b) => a.startMs - b.startMs);
   if (kids.length > 0) {
     pane.append(
-      el('h4', null, `children · ${kids.length}`),
-      el(
-        'ul',
-        { class: 'child-list' },
-        ...kids.slice(0, 200).map((c) =>
-          el(
-            'li',
-            null,
+      section(
+        `Children · ${kids.length}`,
+        el(
+          'div',
+          { class: 'child-list' },
+          ...kids.slice(0, 200).map((c) =>
             el(
               'button',
-              { type: 'button', class: 'link', onclick: (() => actions.select(c)) as EventListener },
-              el('span', { class: `dot k-${c.kind}` }),
-              c.name,
+              { type: 'button', class: 'child-row', onclick: (() => actions.select(c)) as EventListener },
+              el('span', { class: `dot k-${c.meta?.harness === 'lci' ? 'session' : c.kind}` }),
+              el('span', { class: 'child-name' }, c.name),
+              el('span', { class: 'child-dur footnote tabular' }, formatDuration(durationMs(c))),
             ),
-            el('span', { class: 'muted small' }, ` ${formatDuration(durationMs(c))}`),
           ),
+          kids.length > 200 ? el('span', { class: 'muted caption' }, `… ${kids.length - 200} more`) : null,
         ),
-        kids.length > 200 ? el('li', { class: 'muted' }, `… ${kids.length - 200} more`) : null,
       ),
     );
   }
@@ -245,11 +261,15 @@ function renderContainer(pane: HTMLElement, span: Span, actions: DetailActions):
 
 // ---- bits -----------------------------------------------------------------
 
+function section(title: string, ...children: Array<HTMLElement | null>): HTMLElement {
+  return el('div', { class: 'detail-section' }, el('span', { class: 'section-cap' }, title), ...children);
+}
+
 function kv(rows: Array<[string, string]>): HTMLElement {
   return el(
     'dl',
     { class: 'kv' },
-    ...rows.flatMap(([k, v]) => [el('dt', null, k), el('dd', null, v)]),
+    ...rows.flatMap(([k, v]) => [el('dt', null, k), el('dd', { title: v }, v)]),
   );
 }
 
@@ -269,5 +289,5 @@ function pre(text: string): HTMLElement {
 }
 
 function truncatedNote(): HTMLElement {
-  return el('p', { class: 'muted small' }, '(long content truncated for display)');
+  return el('p', { class: 'muted caption' }, '(long content truncated for display)');
 }

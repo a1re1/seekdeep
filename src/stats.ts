@@ -17,6 +17,8 @@ export interface UsageBucket {
   hourMs: number;
   model: string;
   provider?: string;
+  /** Harness that made the calls (claude, lci, codex, …); absent on records cached before it existed. */
+  harness?: string;
   requests: number;
   input: number;
   cacheRead: number;
@@ -77,7 +79,8 @@ export interface Activity {
   delta: Delta;
   columns: number[];
   models: string[];
-  series: { costUsd: number[][]; requests: number[][] };
+  /** Per model (in `models` order) × per column: cost, request count, prompt+output tokens. */
+  series: { costUsd: number[][]; requests: number[][]; tokens: number[][] };
   tokens: { prompt: number[]; completion: number[]; reasoning: number[] };
   caching: { cached: number[]; uncached: number[] };
   sparkline: {
@@ -97,16 +100,19 @@ export interface Activity {
  */
 export function bucketSession(session: Session): UsageBucket[] {
   const byKey = new Map<string, UsageBucket>();
+  const own = harnessOf(session.format);
   for (const span of flatten(session.root)) {
     if (span.kind !== 'model' || !span.usage) continue;
     const hourMs = Math.floor(span.startMs / HOUR_MS) * HOUR_MS;
     const model = span.model ?? '';
-    const key = `${hourMs}\u0000${model}`;
+    const harness = typeof span.meta?.harness === 'string' ? span.meta.harness : own;
+    const key = bucketKey(hourMs, model, harness);
     let bucket = byKey.get(key);
     if (bucket === undefined) {
       bucket = {
         hourMs,
         model,
+        harness,
         requests: 0,
         input: 0,
         cacheRead: 0,
@@ -136,17 +142,27 @@ export function bucketSession(session: Session): UsageBucket[] {
   return [...byKey.values()];
 }
 
-/** Sum bucket lists by (hourMs, model); result sorted by hour then model. */
+/** The harness label shown in the activity filter for a transcript format. */
+export function harnessOf(format: Session['format']): string {
+  return format === 'claude-code' ? 'claude' : format;
+}
+
+function bucketKey(hourMs: number, model: string, harness: string | undefined): string {
+  return `${hourMs}\u0000${model}\u0000${harness ?? ''}`;
+}
+
+/** Sum bucket lists by (hourMs, model, harness); result sorted by hour then model. */
 export function mergeBuckets(lists: UsageBucket[][]): UsageBucket[] {
   const byKey = new Map<string, UsageBucket>();
   for (const list of lists) {
     for (const b of list) {
-      const key = `${b.hourMs}\u0000${b.model}`;
+      const key = bucketKey(b.hourMs, b.model, b.harness);
       let bucket = byKey.get(key);
       if (bucket === undefined) {
         bucket = {
           hourMs: b.hourMs,
           model: b.model,
+          ...(b.harness !== undefined ? { harness: b.harness } : {}),
           requests: 0,
           input: 0,
           cacheRead: 0,
@@ -267,6 +283,8 @@ interface ModelAcc {
   provider?: string;
   cost: number[];
   requests: number[];
+  /** prompt + output tokens per column */
+  tokensByCol: number[];
   requestsTotal: number;
   promptTokens: number;
   outputTokens: number;
@@ -338,6 +356,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
         provider: b.provider,
         cost: new Array<number>(nCols).fill(0),
         requests: new Array<number>(nCols).fill(0),
+        tokensByCol: new Array<number>(nCols).fill(0),
         requestsTotal: 0,
         promptTokens: 0,
         outputTokens: 0,
@@ -351,6 +370,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
     if (acc.provider === undefined && b.provider !== undefined) acc.provider = b.provider;
     acc.cost[idx] = (acc.cost[idx] ?? 0) + cost;
     acc.requests[idx] = (acc.requests[idx] ?? 0) + b.requests;
+    acc.tokensByCol[idx] = (acc.tokensByCol[idx] ?? 0) + prompt + b.output;
     acc.requestsTotal += b.requests;
     acc.promptTokens += prompt;
     acc.outputTokens += b.output;
@@ -369,6 +389,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
   const series = {
     costUsd: models.map((m) => accs.get(m)!.cost),
     requests: models.map((m) => accs.get(m)!.requests),
+    tokens: models.map((m) => accs.get(m)!.tokensByCol),
   };
 
   const sparkTokens = tokens.prompt.map((p, i) => p + tokens.completion[i]! + tokens.reasoning[i]!);

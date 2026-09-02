@@ -9,6 +9,7 @@ import type { Span } from '../model.ts';
 import { cacheHitRate, durationMs, selfTimeMs } from '../model.ts';
 import { el } from './dom.ts';
 import { formatCost, formatCount, formatDuration, formatPct, formatTokens } from './format.ts';
+import { icon } from './icons.ts';
 
 export interface TraceRow {
   span: Span;
@@ -16,7 +17,7 @@ export interface TraceRow {
   hasChildren: boolean;
 }
 
-export const ROW_HEIGHT = 24;
+export const ROW_HEIGHT = 26;
 const BUFFER_ROWS = 40;
 /** Turns with more direct children than this start collapsed. */
 export const AUTO_COLLAPSE_CHILDREN = 300;
@@ -87,6 +88,8 @@ export function tooltipText(span: Span): string {
 export class TraceView {
   onSelect: (span: Span | null) => void = () => {};
   onZoom: (span: Span) => void = () => {};
+  /** Fires whenever the visible row count changes (collapse/expand/new root). */
+  onRows: (count: number) => void = () => {};
 
   collapsed = new Set<string>();
   selected: Span | null = null;
@@ -109,7 +112,7 @@ export class TraceView {
     private readonly container: HTMLElement,
     private readonly tooltip: HTMLElement,
   ) {
-    this.namesHeader = el('div', { class: 'trace-names trace-names-h' }, 'span');
+    this.namesHeader = el('div', { class: 'trace-names trace-names-h' }, 'Span');
     this.axis = el('div', { class: 'trace-track trace-axis' });
     this.header = el('div', { class: 'trace-header' }, this.namesHeader, this.axis);
     this.grid = el('div', { class: 'trace-grid' });
@@ -177,6 +180,13 @@ export class TraceView {
     this.rebuild();
   }
 
+  /** Back to the initial expansion: only oversized turns collapsed. */
+  resetCollapse(): void {
+    if (this.root === null) return;
+    this.collapsed = autoCollapsed(this.root);
+    this.rebuild();
+  }
+
   toggle(span: Span): void {
     if (!this.collapsed.delete(span.id)) this.collapsed.add(span.id);
     this.rebuild();
@@ -194,7 +204,7 @@ export class TraceView {
   private rebuild(): void {
     this.rows = this.root === null ? [] : flattenRows(this.root, this.collapsed);
     this.body.style.height = `${this.rows.length * ROW_HEIGHT}px`;
-    this.namesHeader.textContent = `${this.rows.length} span${this.rows.length === 1 ? '' : 's'}`;
+    this.onRows(this.rows.length);
     this.schedule();
   }
 
@@ -260,7 +270,7 @@ export class TraceView {
               this.toggle(span);
             }) as EventListener,
           },
-          '▾',
+          icon('chevron-down', 11),
         )
       : el('span', { class: 'caret-spacer' });
 
@@ -268,13 +278,13 @@ export class TraceView {
       'div',
       { class: 'trace-names', style: `padding-left:${8 + depth * 14}px` },
       caret,
-      el('span', { class: `dot k-${span.kind}` }),
+      el('span', { class: `dot k-${span.meta?.harness === 'lci' ? 'session' : span.kind}` }),
       el('span', { class: 'name', title: span.name }, span.name),
       el('span', { class: 'dur' }, formatDuration(durationMs(span))),
     );
 
     const bar = el('div', {
-      class: `bar k-${span.kind}${span.ok === false ? ' failed' : ''}`,
+      class: `bar k-${span.meta?.harness === 'lci' ? 'session' : span.kind}${span.ok === false ? ' failed' : ''}`,
       style: `left:${leftFrac * 100}%;width:max(2px,${widthFrac * 100}%)`,
     });
     if (!visible) bar.style.display = 'none';

@@ -53,6 +53,9 @@ export const DEFAULT_PRICING: PricingTable = {
   'gpt-5-codex': openaiRow(1.25, 10),
   'o3': openaiRow(2, 8),
   // Others
+  // GLM 5.3 (non-flash) via OpenRouter: $1.17 in, $3.96 out, cache reads at 20% ($0.234).
+  'glm-5.3': { input: 1.17, output: 3.96, cacheRead: 0.234, cacheWrite5m: 0, cacheWrite1h: 0 },
+  'glm-5-3': { input: 1.17, output: 3.96, cacheRead: 0.234, cacheWrite5m: 0, cacheWrite1h: 0 },
   'glm-5.3-flash': otherRow(0.07, 0.4),
   'glm-5-3-flash': otherRow(0.07, 0.4),
   'kimi-k3': otherRow(0.6, 2.5),

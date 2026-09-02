@@ -5,6 +5,7 @@ import type { Session, Span, Usage } from '../model.ts';
 import { durationMs, selfTimeMs, sumUsage, cacheHitRate } from '../model.ts';
 import { el } from './dom.ts';
 import { formatCost, formatCount, formatDuration, formatPct, formatTokens } from './format.ts';
+import { icon } from './icons.ts';
 
 export interface SummaryNumbers {
   wallMs: number;
@@ -76,25 +77,41 @@ function unionMs(intervals: Array<[number, number]>): number {
   return total + curEnd - curStart;
 }
 
+// Sessions whose warnings bar the user dismissed; re-renders keep it hidden.
+const dismissedWarnings = new WeakSet<Session>();
+
 export function renderSummary(
   container: HTMLElement,
   session: Session,
   numbers: SummaryNumbers,
 ): void {
+  const all = flattenSpans(session.root).filter((s) => s !== session.root);
+  const modelCalls = all.filter((s) => s.kind === 'model').length;
+  const toolCalls = all.filter((s) => s.kind === 'tool').length;
+  const promptTokens = numbers.usage.input + numbers.usage.cacheRead + numbers.usage.cacheWrite;
+  const share = (ms: number): string => (numbers.wallMs > 0 ? `${((ms / numbers.wallMs) * 100).toFixed(0)}% of wall` : '');
+  const calls = (n: number): string => `${formatCount(n)} call${n === 1 ? '' : 's'}`;
+
   set('s-wall', formatDuration(numbers.wallMs));
+  set('s-wall-sub', `${all.length} span${all.length === 1 ? '' : 's'} · ${startLabel(session.root.startMs)}`);
   set('s-model', formatDuration(numbers.modelMs));
+  set('s-model-sub', [share(numbers.modelMs), calls(modelCalls)].filter(Boolean).join(' · '));
   set('s-tool', formatDuration(numbers.toolMs));
+  set('s-tool-sub', [share(numbers.toolMs), calls(toolCalls)].filter(Boolean).join(' · '));
   set('s-idle', formatDuration(numbers.idleMs));
+  set('s-idle-sub', share(numbers.idleMs));
   set('s-tokens', formatTokens(numbers.usage));
+  set('s-tokens-sub', 'in / cache rd / cache wr / out');
   set('s-hitrate', formatPct(numbers.hitRate));
+  set('s-hitrate-sub', promptTokens > 0 ? `${formatCount(numbers.usage.cacheRead)} of ${formatCount(promptTokens)} prompt` : 'no usage recorded');
   set('s-cost', formatCost(numbers.costUsd));
+  set('s-cost-sub', modelCalls > 0 ? `${formatCost(numbers.costUsd / modelCalls)} per call` : '');
 
   const body = container.querySelector<HTMLElement>('#details-body');
   if (body === null) return;
   body.textContent = '';
 
   // Top 8 slowest spans (excluding the session root).
-  const all = flattenSpans(session.root).filter((s) => s !== session.root);
   const slowest = [...all].sort((a, b) => durationMs(b) - durationMs(a)).slice(0, 8);
   body.append(
     el('h3', null, 'slowest spans'),
@@ -154,27 +171,40 @@ export function renderSummary(
         ),
   );
 
-  // Warnings.
   groupSections(body);
 
+  // Warnings: one glass bar, dismissible per session.
   const warnings = container.querySelector<HTMLElement>('#warnings');
   if (warnings !== null) {
     warnings.textContent = '';
-    if (session.warnings.length > 0) {
+    const n = session.warnings.length;
+    if (n > 0 && !dismissedWarnings.has(session)) {
       warnings.hidden = false;
-      // Collapsed by default: the list can run long and the trace needs the room.
       warnings.append(
+        icon('circle-alert', 14),
+        el('span', { class: 'warn-count' }, `${n} warning${n === 1 ? '' : 's'}`),
+        el('span', { class: 'warn-text footnote', title: session.warnings.join('\n') }, session.warnings.join(' · ')),
         el(
-          'details',
-          null,
-          el('summary', null, el('strong', null, `warnings (${session.warnings.length})`)),
-          el('ul', null, ...session.warnings.map((w) => el('li', null, w))),
+          'button',
+          {
+            type: 'button',
+            class: 'vt-btn vt-btn--plain vt-btn--s',
+            onclick: (() => {
+              dismissedWarnings.add(session);
+              warnings.hidden = true;
+            }) as EventListener,
+          },
+          'Dismiss',
         ),
       );
     } else {
       warnings.hidden = true;
     }
   }
+}
+
+function startLabel(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function set(id: string, value: string): void {

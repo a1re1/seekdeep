@@ -4,27 +4,36 @@
 
 import type { Activity } from '../stats.ts';
 import { formatCount, formatCost, formatPct } from './format.ts';
+import { icon } from './icons.ts';
 
 export interface ActivityModel {
   activity: Activity | null;
   /** Progress line shown while transcripts are being read, or null. */
   progress: string | null;
   preset: string;
+  /** Harnesses present in the data (claude, lci, …); the filter offers All plus each of these. */
+  harnesses: string[];
+  /** Selected harness, or null for all. */
+  harness: string | null;
   /** Shown instead of the dashboard when there is nothing to aggregate. */
   empty: string | null;
 }
 
 export interface ActivityActions {
   onRange(preset: string): void;
+  onHarness(harness: string | null): void;
   onRescan(): void;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// Ten distinguishable hues, assigned to models in first-seen order.
+// Design-system hues, assigned to models in first-seen order. These are CSS
+// variables so they follow the theme; they are applied via inline style
+// (presentation attributes cannot carry var()).
 const PALETTE = [
-  '#f97316', '#3b82f6', '#10b981', '#a78bfa', '#f59e0b',
-  '#ef4444', '#06b6d4', '#ec4899', '#84cc16', '#8b5cf6',
+  'var(--accent)', 'var(--teal)', 'var(--green)', 'var(--purple)', 'var(--orange)',
+  'var(--red)', 'var(--indigo)', 'var(--pink)', 'var(--yellow)',
+  'color-mix(in oklch, var(--green) 55%, var(--yellow))',
 ];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -40,7 +49,7 @@ export function renderActivity(host: HTMLElement, model: ActivityModel, actions:
   host.append(buildToolbar(model, actions));
   if (model.empty !== null) {
     const note = document.createElement('p');
-    note.className = 'muted activity-empty';
+    note.className = 'card activity-empty footnote';
     note.textContent = model.empty;
     host.append(note);
     return;
@@ -53,11 +62,12 @@ export function renderActivity(host: HTMLElement, model: ActivityModel, actions:
 function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLElement {
   const select = document.createElement('select');
   select.id = 'activity-range';
+  select.className = 'vt-select';
   for (const [value, label] of [
-    ['48h', 'past 48 hours'],
-    ['7d', 'past 7 days'],
-    ['30d', 'past 30 days'],
-    ['all', 'all time'],
+    ['48h', 'Past 48 hours'],
+    ['7d', 'Past 7 days'],
+    ['30d', 'Past 30 days'],
+    ['all', 'All time'],
   ] as const) {
     const option = document.createElement('option');
     option.value = value;
@@ -67,29 +77,53 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   select.value = model.preset;
   select.addEventListener('change', () => actions.onRange(select.value));
   select.disabled = model.progress !== null;
+  const selectWrap = document.createElement('span');
+  selectWrap.className = 'vt-select-wrap';
+  selectWrap.append(select, icon('chevron-down', 12));
 
   const rescan = document.createElement('button');
   rescan.id = 'activity-rescan';
-  rescan.textContent = 'rescan';
+  rescan.type = 'button';
+  rescan.className = 'vt-btn vt-btn--glass';
+  rescan.textContent = 'Rescan';
+  rescan.disabled = model.progress !== null;
   rescan.addEventListener('click', () => actions.onRescan());
 
   const toolbar = document.createElement('div');
-  toolbar.className = 'toolbar activity-toolbar';
-  const head = document.createElement('div');
-  head.className = 'activity-head';
-  const title = document.createElement('h2');
-  title.textContent = 'activity';
+  toolbar.className = 'page-head activity-toolbar';
+  const title = document.createElement('span');
+  title.className = 'page-title';
+  title.textContent = 'Activity';
   const subtitle = document.createElement('span');
-  subtitle.className = 'muted';
-  subtitle.textContent = 'your usage across models from ~/.claude and ~/.lci';
-  head.append(title, subtitle);
-  toolbar.append(head);
-
+  subtitle.className = 'footnote';
+  subtitle.textContent = 'Your usage across models from ~/.claude and ~/.lci';
+  const spacer = document.createElement('span');
+  spacer.className = 'spacer';
   const status = document.createElement('span');
-  status.className = 'muted activity-status';
+  status.className = 'footnote activity-status';
   status.textContent = model.progress ?? '';
-  toolbar.append(status, select, rescan);
+  toolbar.append(title, subtitle, spacer, status);
+  if (model.harnesses.length > 0) toolbar.append(harnessSeg(model, actions));
+  toolbar.append(selectWrap, rescan);
   return toolbar;
+}
+
+/** All | claude | lci | … — filters every card, chart and table row by harness. */
+function harnessSeg(model: ActivityModel, actions: ActivityActions): HTMLElement {
+  const seg = document.createElement('nav');
+  seg.className = 'vt-seg';
+  seg.id = 'activity-harness';
+  seg.setAttribute('aria-label', 'filter by harness');
+  const options: Array<[string | null, string]> = [[null, 'All'], ...model.harnesses.map((h): [string, string] => [h, h])];
+  for (const [value, label] of options) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.setAttribute('aria-pressed', model.harness === value ? 'true' : 'false');
+    button.addEventListener('click', () => actions.onHarness(value));
+    seg.append(button);
+  }
+  return seg;
 }
 
 // ---- headline cards ----------------------------------------------------------
@@ -100,22 +134,24 @@ function buildCards(activity: Activity | null): HTMLElement {
   const metrics: Array<{ key: string; label: string; value: string; series: number[]; delta: number; badWhenUp: boolean }> = activity === null
     ? []
     : [
-      { key: 'cost', label: 'total spend', value: formatCost(activity.totals.costUsd), series: activity.sparkline.costUsd, delta: activity.delta.costUsd, badWhenUp: true },
-      { key: 'requests', label: 'requests', value: formatCount(activity.totals.requests), series: activity.sparkline.requests, delta: activity.delta.requests, badWhenUp: false },
-      { key: 'tokens', label: 'token volume', value: formatCount(activity.totals.tokens), series: activity.sparkline.tokens, delta: activity.delta.tokens, badWhenUp: false },
-      { key: 'cache', label: 'cache hit rate', value: formatPct(activity.totals.cacheHit), series: activity.sparkline.cacheHit, delta: activity.delta.cacheHit, badWhenUp: false },
-      { key: 'blended', label: 'blended $/1M', value: `$${activity.totals.blendedPerM.toFixed(2)}`, series: activity.sparkline.blendedPerM, delta: activity.delta.blendedPerM, badWhenUp: true },
+      { key: 'cost', label: 'Total spend', value: formatCost(activity.totals.costUsd), series: activity.sparkline.costUsd, delta: activity.delta.costUsd, badWhenUp: true },
+      { key: 'requests', label: 'Requests', value: formatCount(activity.totals.requests), series: activity.sparkline.requests, delta: activity.delta.requests, badWhenUp: false },
+      { key: 'tokens', label: 'Token volume', value: formatCount(activity.totals.tokens), series: activity.sparkline.tokens, delta: activity.delta.tokens, badWhenUp: false },
+      { key: 'cache', label: 'Cache hit rate', value: formatPct(activity.totals.cacheHit), series: activity.sparkline.cacheHit, delta: activity.delta.cacheHit, badWhenUp: false },
+      { key: 'blended', label: 'Blended $/1M', value: `$${activity.totals.blendedPerM.toFixed(2)}`, series: activity.sparkline.blendedPerM, delta: activity.delta.blendedPerM, badWhenUp: true },
     ];
   for (const m of metrics) {
     const card = document.createElement('div');
     card.className = 'stat-card';
     const label = document.createElement('span');
-    label.className = 'stat-label muted';
+    label.className = 'stat-k';
     label.textContent = m.label;
     const value = document.createElement('span');
-    value.className = 'stat-value';
+    value.className = 'stat-v';
     value.textContent = m.value;
-    card.append(label, value, sparkline(m.series));
+    const text = document.createElement('div');
+    text.className = 'stat-text';
+    text.append(label, value);
     const delta = document.createElement('span');
     const good = m.badWhenUp ? m.delta < 0 : m.delta > 0;
     const neutral = !Number.isFinite(m.delta) || m.delta === 0;
@@ -125,7 +161,8 @@ function buildCards(activity: Activity | null): HTMLElement {
     vs.className = 'muted stat-vs';
     vs.textContent = 'vs prev period';
     delta.append(' ', vs);
-    card.append(delta);
+    text.append(delta);
+    card.append(text, sparkline(m.series));
     row.append(card);
   }
   return row;
@@ -133,13 +170,13 @@ function buildCards(activity: Activity | null): HTMLElement {
 
 /** Compact sparkline: a filled area + line over the per-column series. */
 function sparkline(series: number[]): SVGElement {
-  const svg = svgEl('svg', { class: 'sparkline', viewBox: '0 0 100 24', preserveAspectRatio: 'none' });
+  const svg = svgEl('svg', { class: 'sparkline', viewBox: '0 0 100 32', preserveAspectRatio: 'none' });
   const max = Math.max(...series, 0);
   if (series.length > 1 && max > 0) {
-    const pts = series.map((v, i) => `${((i / (series.length - 1)) * 100).toFixed(2)},${(22 - (v / max) * 20).toFixed(2)}`);
+    const pts = series.map((v, i) => `${((i / (series.length - 1)) * 100).toFixed(2)},${(30 - (v / max) * 28).toFixed(2)}`);
     svg.append(
-      svgEl('polygon', { points: `0,24 ${pts.join(' ')} 100,24`, class: 'sparkline-area' }),
-      svgEl('polyline', { points: pts.join(' '), class: 'sparkline-line' }),
+      svgEl('polygon', { points: `0,32 ${pts.join(' ')} 100,32`, class: 'sparkline-area' }),
+      svgEl('polyline', { points: pts.join(' '), class: 'sparkline-line', 'vector-effect': 'non-scaling-stroke' }),
     );
   }
   return svg;
@@ -167,43 +204,163 @@ function buildCharts(activity: Activity | null): HTMLElement {
   if (activity === null) return grid;
   const charts: ChartSpec[] = [
     {
-      title: 'usage by model ($)',
+      title: 'Usage by model ($)',
       unit: '$',
       columns: activity.columns,
       series: modelSeries(activity, (s) => s.costUsd),
     },
     {
-      title: 'request volume by model',
+      title: 'Request volume by model',
       columns: activity.columns,
       series: modelSeries(activity, (s) => s.requests),
     },
     {
-      title: 'token breakdown',
+      title: 'Token breakdown by model',
+      columns: activity.columns,
+      series: modelSeries(activity, (s) => s.tokens),
+    },
+    {
+      title: 'Token breakdown',
       columns: activity.columns,
       series: [
-        { key: 'prompt', name: 'prompt', color: '#3b82f6', values: activity.tokens.prompt },
-        { key: 'completion', name: 'completion', color: '#10b981', values: activity.tokens.completion },
-        { key: 'reasoning', name: 'reasoning', color: '#f59e0b', values: activity.tokens.reasoning },
+        { key: 'prompt', name: 'prompt', color: 'var(--accent)', values: activity.tokens.prompt },
+        { key: 'completion', name: 'completion', color: 'var(--green)', values: activity.tokens.completion },
+        { key: 'reasoning', name: 'reasoning', color: 'var(--orange)', values: activity.tokens.reasoning },
       ],
     },
     {
-      title: 'prompt token caching',
+      title: 'Prompt token caching',
       columns: activity.columns,
       series: [
-        { key: 'cached', name: 'cached', color: '#10b981', values: activity.caching.cached },
-        { key: 'uncached', name: 'uncached', color: '#f59e0b', values: activity.caching.uncached },
+        { key: 'cached', name: 'cached', color: 'var(--green)', values: activity.caching.cached },
+        { key: 'uncached', name: 'uncached', color: 'var(--orange)', values: activity.caching.uncached },
       ],
     },
   ];
+  const tip = chartTooltip(grid);
   for (const spec of charts) {
     const panel = document.createElement('div');
-    panel.className = 'chart-panel';
+    panel.className = 'card chart-panel';
     const h = document.createElement('h3');
     h.textContent = spec.title;
-    panel.append(h, stackedBars(spec.columns, spec.series, { unit: spec.unit, format: spec.unit === '$' ? formatCost : formatCount }), legendRow(spec.series));
+    panel.append(
+      h,
+      stackedBars(spec.columns, spec.series, { unit: spec.unit, format: spec.unit === '$' ? formatCost : formatCount, tooltip: tip }),
+      legendRow(spec.series),
+    );
     grid.append(panel);
   }
+  // Spend per model: one horizontal bar per model so the ranking reads at a glance.
+  const spend = document.createElement('div');
+  spend.className = 'card chart-panel';
+  const spendTitle = document.createElement('h3');
+  spendTitle.textContent = 'Spend per model';
+  const colors = new Map(modelSeries(activity, (s) => s.costUsd).map((m) => [m.name, m.color]));
+  spend.append(
+    spendTitle,
+    horizontalBars(
+      activity.perModel.map((row) => ({
+        name: row.model,
+        color: colors.get(row.model) ?? 'var(--text-tertiary)',
+        value: row.costUsd,
+        detail: `${formatCount(row.requests)} requests · ${formatCount(row.tokens)} tokens`,
+      })),
+      { format: formatCost, tooltip: tip },
+    ),
+  );
+  grid.append(spend);
   return grid;
+}
+
+// ---- hover tooltip -------------------------------------------------------------
+
+export interface ChartTooltip {
+  show(lines: string[], e: MouseEvent): void;
+  move(e: MouseEvent): void;
+  hide(): void;
+}
+
+/** One floating tooltip shared by every chart in `host`, positioned near the pointer. */
+function chartTooltip(host: HTMLElement): ChartTooltip {
+  const node = document.createElement('div');
+  node.className = 'tooltip chart-tooltip';
+  node.hidden = true;
+  host.append(node);
+  const move = (e: MouseEvent): void => {
+    const pad = 14;
+    const w = node.offsetWidth;
+    const h = node.offsetHeight;
+    let x = e.clientX + pad;
+    let y = e.clientY + pad;
+    if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+    if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+    node.style.left = `${Math.max(4, x)}px`;
+    node.style.top = `${Math.max(4, y)}px`;
+  };
+  return {
+    show: (lines, e) => {
+      node.replaceChildren();
+      lines.forEach((line, i) => {
+        const row = document.createElement('div');
+        row.className = i === 0 ? 'chart-tooltip-title' : 'chart-tooltip-line';
+        row.textContent = line;
+        node.append(row);
+      });
+      node.hidden = false;
+      move(e);
+    },
+    move,
+    hide: () => {
+      node.hidden = true;
+    },
+  };
+}
+
+function attachHover(target: Element, lines: () => string[], tip: ChartTooltip | undefined): void {
+  if (tip === undefined) return;
+  target.addEventListener('mouseenter', (e) => tip.show(lines(), e as MouseEvent));
+  target.addEventListener('mousemove', (e) => tip.move(e as MouseEvent));
+  target.addEventListener('mouseleave', () => tip.hide());
+}
+
+/**
+ * Horizontal bars, one per row in the given order, label on the left and the
+ * formatted value at the bar's end. Builds SVG; no other state.
+ */
+export function horizontalBars(
+  rows: Array<{ name: string; color: string; value: number; detail?: string }>,
+  opts: { format?: (v: number) => string; tooltip?: ChartTooltip } = {},
+): SVGElement {
+  const format = opts.format ?? formatCount;
+  const W = 640;
+  const ROW = 24;
+  const M = { top: 4, right: 64, bottom: 4, left: 168 };
+  const H = M.top + M.bottom + Math.max(1, rows.length) * ROW;
+  const svg = svgEl('svg', { class: 'chart chart-h', viewBox: `0 0 ${W} ${H}`, width: '100%' });
+  if (rows.length === 0) return svg;
+  const max = Math.max(...rows.map((r) => r.value), 0) || 1;
+  const total = rows.reduce((a, r) => a + r.value, 0);
+  const plotW = W - M.left - M.right;
+  rows.forEach((row, i) => {
+    const y = M.top + i * ROW;
+    const w = Math.max(row.value > 0 ? 1 : 0, (row.value / max) * plotW);
+    const group = svgEl('g', { class: 'chart-hrow' });
+    const label = svgEl('text', { x: M.left - 8, y: y + ROW / 2 + 4, class: 'chart-label chart-hlabel', 'text-anchor': 'end' });
+    label.textContent = row.name.length > 26 ? `${row.name.slice(0, 25)}…` : row.name;
+    const track = svgEl('rect', { x: M.left, y: y + 5, width: plotW, height: ROW - 10, rx: 4, class: 'chart-htrack' });
+    const bar = svgEl('rect', { x: M.left, y: y + 5, width: w, height: ROW - 10, rx: 4 });
+    (bar as SVGElement & { style: CSSStyleDeclaration }).style.fill = row.color;
+    const value = svgEl('text', { x: M.left + w + 6, y: y + ROW / 2 + 4, class: 'chart-label chart-hvalue' });
+    value.textContent = format(row.value);
+    group.append(label, track, bar, value);
+    attachHover(
+      group,
+      () => [row.name, `${format(row.value)}${total > 0 ? ` · ${((row.value / total) * 100).toFixed(1)}% of total` : ''}`, ...(row.detail !== undefined ? [row.detail] : [])],
+      opts.tooltip,
+    );
+    svg.append(group);
+  });
+  return svg;
 }
 
 /** Per-model cost/requests series, in the activity's model order. */
@@ -215,7 +372,7 @@ export function modelSeries(
   return activity.models.map((model, i) => ({
     key: `${model}:${i}`,
     name: model,
-    color: PALETTE[i % PALETTE.length] ?? '#6b7280',
+    color: PALETTE[i % PALETTE.length] ?? 'var(--text-tertiary)',
     values: rows[i] ?? [],
   }));
 }
@@ -227,7 +384,7 @@ export function modelSeries(
 export function stackedBars(
   columns: number[],
   seriesByKey: Array<{ key: string; name: string; color: string; values: number[] }>,
-  opts: { unit?: string; format?: (v: number) => string } = {},
+  opts: { unit?: string; format?: (v: number) => string; tooltip?: ChartTooltip } = {},
 ): SVGElement {
   const format = opts.format ?? formatCount;
   const W = 640;
@@ -265,6 +422,7 @@ export function stackedBars(
 
   columns.forEach((_, i) => {
     let y = H - M.bottom;
+    const columnTotal = seriesByKey.reduce((acc, s) => acc + (s.values[i] ?? 0), 0);
     for (const s of seriesByKey) {
       const v = s.values[i] ?? 0;
       if (v <= 0) continue;
@@ -275,11 +433,19 @@ export function stackedBars(
         y,
         width: barW,
         height: Math.max(h, 0.5),
-        fill: s.color,
+        rx: 2,
       });
-      const title = document.createElementNS(SVG_NS, 'title');
-      title.textContent = `${axisLabel(columns, i)} · ${s.name}: ${format(v)}`;
-      rect.append(title);
+      (rect as SVGElement & { style: CSSStyleDeclaration }).style.fill = s.color;
+      rect.setAttribute('aria-label', `${axisLabel(columns, i)} · ${s.name}: ${format(v)}`);
+      attachHover(
+        rect,
+        () => [
+          s.name,
+          `${format(v)}${columnTotal > 0 ? ` · ${((v / columnTotal) * 100).toFixed(1)}% of ${format(columnTotal)}` : ''}`,
+          axisLabel(columns, i),
+        ],
+        opts.tooltip,
+      );
       svg.append(rect);
     }
   });
@@ -332,34 +498,44 @@ function axisLabel(columns: number[], i: number): string {
 
 function buildTable(activity: Activity | null): HTMLElement {
   const wrap = document.createElement('div');
-  wrap.className = 'activity-table-wrap';
+  wrap.className = 'card activity-table-wrap';
   if (activity === null) return wrap;
-  const table = document.createElement('table');
+  const table = document.createElement('div');
   table.className = 'activity-table';
-  const head = document.createElement('tr');
+  const head = document.createElement('div');
+  head.className = 'activity-row activity-row--head';
   for (const label of [
-    'model', 'provider', 'requests', 'prompt toks', 'output toks', 'cache hit',
-    'avg latency', 'out tok/s', '$/1M in', '$/1M out', 'effective $/1M', 'total cost',
+    'Model', 'Provider', 'Requests', 'Prompt', 'Output', 'Cache hit',
+    'Latency', 'Tok/s', '$/1M in', '$/1M out', 'Eff. $/1M', 'Cost',
   ]) {
-    const th = document.createElement('th');
+    const th = document.createElement('span');
+    th.className = 'section-cap';
     th.textContent = label;
     head.append(th);
   }
   table.append(head);
   if (activity.perModel.length === 0) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 12;
-    td.className = 'muted';
-    td.textContent = 'no usage in this range';
-    tr.append(td);
-    table.append(tr);
+    const empty = document.createElement('div');
+    empty.className = 'activity-empty footnote';
+    empty.textContent = 'No usage in this range.';
+    table.append(empty);
   }
-  for (const row of activity.perModel) {
-    const tr = document.createElement('tr');
+  activity.perModel.forEach((row, i) => {
+    const tr = document.createElement('div');
+    tr.className = 'activity-row footnote tabular';
+    const name = document.createElement('span');
+    name.className = 'activity-model';
+    const swatch = document.createElement('span');
+    swatch.className = 'legend-swatch';
+    swatch.style.background = PALETTE[activity.models.indexOf(row.model) % PALETTE.length] ?? PALETTE[i % PALETTE.length] ?? '';
+    const label = document.createElement('span');
+    label.className = 'mono';
+    label.textContent = row.model;
+    label.title = row.model;
+    name.append(swatch, label);
+    tr.append(name);
     for (const cell of [
-      row.model,
-      row.provider ?? '',
+      row.provider ?? '—',
       formatCount(row.requests),
       formatCount(row.promptTokens),
       formatCount(row.outputTokens),
@@ -371,12 +547,12 @@ function buildTable(activity: Activity | null): HTMLElement {
       `$${row.effectivePerM.toFixed(2)}`,
       formatCost(row.costUsd),
     ]) {
-      const td = document.createElement('td');
+      const td = document.createElement('span');
       td.textContent = cell;
       tr.append(td);
     }
     table.append(tr);
-  }
+  });
   wrap.append(table);
   return wrap;
 }

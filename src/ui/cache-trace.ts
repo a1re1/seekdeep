@@ -46,8 +46,8 @@ export function drawCacheTrace(
     maxTotal = Math.max(maxTotal, (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0) + (u?.input ?? 0));
   }
   if (maxTotal === 0) {
-    ctx.fillStyle = cssVar('--muted', '#888');
-    ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = cssVar('--text-tertiary', '#888');
+    ctx.font = '11px -apple-system, system-ui, sans-serif';
     ctx.fillText('no token usage recorded', 6, h / 2);
     return;
   }

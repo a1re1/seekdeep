@@ -45,7 +45,7 @@ export async function collectBuckets(
   for (const entry of entries) {
     const rec = cache.get(`${entry.kind}:${entry.path}`);
     if (rec !== undefined && rec.size === entry.file.size && rec.lastModified === entry.file.lastModified) {
-      lists.push(rec.buckets);
+      lists.push(withHarness(rec.buckets, entry.kind));
       done += 1;
     } else {
       stale.push(entry);
@@ -56,12 +56,17 @@ export async function collectBuckets(
     const batch = stale.slice(i, i + BATCH_SIZE);
     const records = await Promise.all(batch.map(readRecord));
     const fresh = records.filter((rec): rec is ActivityRecord => rec !== null);
-    for (const rec of fresh) lists.push(rec.buckets);
+    for (const rec of fresh) lists.push(withHarness(rec.buckets, rec.kind));
     await saveActivityRecords(fresh);
     done += batch.length;
     onProgress?.(done, entries.length);
   }
   return mergeBuckets(lists);
+}
+
+/** Records cached before buckets carried a harness get it from their source kind. */
+function withHarness(buckets: UsageBucket[], kind: SourceKind): UsageBucket[] {
+  return buckets.map((b) => (b.harness === undefined ? { ...b, harness: kind } : b));
 }
 
 /** Remove every cached activity record of `kind` (when its directory is forgotten). */

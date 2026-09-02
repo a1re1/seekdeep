@@ -1,22 +1,21 @@
-// Pricing editor: inline-editable table of model → USD-per-1M-token rates.
+// Pricing editor: inline-editable grid of model → USD-per-1M-token rates.
 // Edits persist to localStorage (key seekdeep.pricing) and re-apply pricing.
 
 import type { PricingTable } from '../pricing.ts';
 import {
   clearPricingOverrides,
   DEFAULT_PRICING,
-  loadPricingOverrides,
   savePricingOverrides,
 } from '../pricing.ts';
 import { el } from './dom.ts';
 
-const FIELDS = [
-  'input',
-  'output',
-  'cacheRead',
-  'cacheWrite5m',
-  'cacheWrite1h',
-] as const;
+const FIELDS: Array<[keyof PricingTable[string], string]> = [
+  ['input', 'Input'],
+  ['cacheRead', 'Cache read'],
+  ['cacheWrite5m', 'Cache write 5m'],
+  ['cacheWrite1h', 'Cache write 1h'],
+  ['output', 'Output'],
+];
 
 export function renderPricingEditor(
   container: HTMLElement,
@@ -24,49 +23,42 @@ export function renderPricingEditor(
   onChange: (table: PricingTable) => void,
 ): void {
   container.textContent = '';
-  const overrides = safeOverrides();
 
   const rows = Object.keys(table).sort();
-  const tableEl = el(
-    'table',
-    { class: 'detail-table pricing' },
-    el(
-      'thead',
-      null,
-      el(
-        'tr',
-        null,
-        el('th', null, 'model'),
-        ...FIELDS.map((f) => el('th', null, f)),
-      ),
-    ),
-    el(
-      'tbody',
-      null,
-      ...rows.map((model) => {
-        const row = table[model]!;
-        const inputs = FIELDS.map((field) => {
-          const input = el('input', {
-            type: 'number',
-            step: 'any',
-            min: '0',
-            value: String(row[field]),
-            'data-model': model,
-            'data-field': field,
-          }) as HTMLInputElement;
-          return input;
-        });
-        return el('tr', null, el('td', null, model), ...inputs);
-      }),
-    ),
+  const grid = el(
+    'div',
+    { class: 'pricing-grid' },
+    el('span', { class: 'section-cap' }, 'Model'),
+    ...FIELDS.map(([, label]) => el('span', { class: 'section-cap' }, label)),
+    ...rows.flatMap((model) => {
+      const row = table[model]!;
+      return [
+        el('span', { class: 'pricing-model mono footnote', title: model }, model),
+        ...FIELDS.map(([field]) =>
+          el(
+            'label',
+            { class: 'vt-input pricing-input' },
+            el('input', {
+              type: 'number',
+              step: 'any',
+              min: '0',
+              value: String(Number(row[field].toPrecision(12))), // strips float noise (0.30000000000000004) losslessly
+              'aria-label': `${model} ${field}`,
+              'data-model': model,
+              'data-field': field,
+            }),
+          ),
+        ),
+      ];
+    }),
   );
-  container.append(tableEl);
+  container.append(grid);
 
   const commit = (): void => {
     const next: PricingTable = {};
     for (const input of container.querySelectorAll<HTMLInputElement>('input[data-model]')) {
       const model = input.dataset.model ?? '';
-      const field = input.dataset.field as (typeof FIELDS)[number];
+      const field = input.dataset.field as keyof PricingTable[string];
       const cur = next[model] ?? { ...table[model]! };
       // An emptied field must not silently become $0 — restore the rate.
       if (input.value.trim() === '') {
@@ -82,7 +74,7 @@ export function renderPricingEditor(
     onChange(next);
   };
 
-  tableEl.addEventListener('change', () => commit());
+  grid.addEventListener('change', () => commit());
 
   const existing = document.getElementById('pricing-reset');
   if (existing !== null) {
@@ -91,14 +83,5 @@ export function renderPricingEditor(
       renderPricingEditor(container, DEFAULT_PRICING, onChange);
       onChange({ ...DEFAULT_PRICING });
     };
-  }
-  void overrides;
-}
-
-function safeOverrides(): Record<string, unknown> {
-  try {
-    return loadPricingOverrides() as Record<string, unknown>;
-  } catch {
-    return {};
   }
 }

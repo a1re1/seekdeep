@@ -16,6 +16,10 @@ describe('priceFor', () => {
   test('provider-prefixed model names fall back to the bare name', () => {
     expect(priceFor('anthropic/claude-opus-5')).toEqual(DEFAULT_PRICING['claude-opus-5']!);
     expect(priceFor('z-ai/glm-5.3-flash')).toEqual(DEFAULT_PRICING['glm-5.3-flash']!);
+    // The non-flash row must not swallow the flash names (longest prefix wins) and vice versa.
+    expect(priceFor('z-ai/glm-5.3')).toEqual(DEFAULT_PRICING['glm-5.3']!);
+    expect(priceFor('glm-5-3')).toEqual(DEFAULT_PRICING['glm-5.3']!);
+    expect(priceFor('z-ai/glm-5.3')!.input).toBe(1.17);
     expect(priceFor('openai/gpt-5-mini')?.input).toBe(0.25); // not the shorter 'gpt-5'
   });
   test('`.` and `-` are equivalent in keys and model names', () => {
