@@ -63,13 +63,13 @@ describe('applyPricing', () => {
     expect(s.root.meta?.costRollupUsd).toBeCloseTo(total, 9);
     expect(s.warnings.filter((w) => /no pricing/.test(w))).toHaveLength(0);
 
-    const lci = parseTranscript(
+    const drip = parseTranscript(
       JSON.stringify({ at: '2026-01-01T00:00:01.000Z', type: 'event', kind: 'inference', iteration: 1, data: { model: 'mystery-9', promptTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0, completionTokens: 1, latencyMs: 5 } }) + '\n' +
       JSON.stringify({ at: '2026-01-01T00:00:02.000Z', type: 'event', kind: 'inference', iteration: 1, data: { model: 'mystery-9', promptTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0, completionTokens: 1, latencyMs: 5 } }),
       'x.jsonl',
     );
-    applyPricing(lci, DEFAULT_PRICING);
-    expect(flatten(lci.root).filter((x) => x.kind === 'model').map((m) => m.costUsd)).toEqual([0, 0]);
-    expect(lci.warnings.filter((w) => w === 'no pricing for mystery-9')).toHaveLength(1);
+    applyPricing(drip, DEFAULT_PRICING);
+    expect(flatten(drip.root).filter((x) => x.kind === 'model').map((m) => m.costUsd)).toEqual([0, 0]);
+    expect(drip.warnings.filter((w) => w === 'no pricing for mystery-9')).toHaveLength(1);
   });
 });

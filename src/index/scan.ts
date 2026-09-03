@@ -1,10 +1,10 @@
-// Pure, testable scanning of Claude Code, lci, pi and OpenCode sources into
+// Pure, testable scanning of Claude Code, drip, pi and OpenCode sources into
 // SessionEntry records. Only the first 64 KiB (head) and last 16 KiB (tail)
 // of each transcript are read: the head carries cwd/branch/title/start, the
 // tail the last timestamp. Files are scanned in small batches so large
 // directories stay responsive; onProgress reports (done, total).
 //
-// The lci head walk additionally reads the first transcript line (the goal
+// The drip head walk additionally reads the first transcript line (the goal
 // prompt title) before any other file I/O, so the very first read returns
 // the header records needed to decide whether the file is worth scanning.
 
@@ -46,13 +46,13 @@ export async function scanClaude(
   return keepScanned(entries);
 }
 
-export async function scanLci(
+export async function scanDrip(
   files: SourceFile[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<SessionEntry[]> {
   const byPath = new Map<string, SourceFile>();
   for (const f of files) byPath.set(f.path, f);
-  const entries = await mapBatched(lciTranscripts(files), (f) => scanLciFile(f, byPath), onProgress);
+  const entries = await mapBatched(dripTranscripts(files), (f) => scanDripFile(f, byPath), onProgress);
   return keepScanned(entries);
 }
 
@@ -148,7 +148,7 @@ export function claudeTranscripts(files: SourceFile[]): SourceFile[] {
 }
 
 /** `<slug>/sessions/<sessionId>/transcript.jsonl`. */
-export function lciTranscripts(files: SourceFile[]): SourceFile[] {
+export function dripTranscripts(files: SourceFile[]): SourceFile[] {
   return files.filter((f) => {
     const parts = f.path.split('/');
     const i = parts.length - 1;
@@ -290,9 +290,9 @@ function clip(text: string): string {
   return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line;
 }
 
-// ---- lci -----------------------------------------------------------------
+// ---- drip -----------------------------------------------------------------
 
-async function scanLciFile(
+async function scanDripFile(
   file: SourceFile,
   byPath: Map<string, SourceFile>,
 ): Promise<SessionEntry | null> {
@@ -309,7 +309,7 @@ async function scanLciFile(
     const id = typeof meta?.id === 'string' && meta.id.length > 0 ? meta.id : parts[i - 1] ?? file.name;
 
     let title = typeof result?.goal === 'string' ? clip(result.goal) : '';
-    if (title === '') title = lciTitle(head);
+    if (title === '') title = dripTitle(head);
 
     // Prefer the sibling metadata; fall back to transcript timestamps.
     let startMs = parseTs(meta?.createdAt);
@@ -322,7 +322,7 @@ async function scanLciFile(
     if (Number.isNaN(endMs)) endMs = startMs;
 
     return {
-      kind: 'lci',
+      kind: 'drip',
       id,
       path: file.path,
       slug,
@@ -340,7 +340,7 @@ async function scanLciFile(
 }
 
 /** First record carrying a non-empty string `text` field = the goal prompt. */
-function lciTitle(head: string): string {
+function dripTitle(head: string): string {
   for (const line of head.split('\n')) {
     const rec = tryParse(line);
     if (rec === null) continue;

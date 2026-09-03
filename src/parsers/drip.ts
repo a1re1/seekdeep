@@ -1,4 +1,4 @@
-// Parser for lci transcript JSONL files.
+// Parser for drip transcript JSONL files.
 //
 // Every line is `{"at":"<ISO>","type":"event"|"goal"|"run-end", ...}`.
 // Event records: `{"at":"…","type":"event","kind":"<kind>","iteration":N,
@@ -105,9 +105,9 @@ const MISC_KINDS = new Set([
 
 const SUMMARY_KINDS = new Set(['run-summary', 'run-complete']);
 
-export function parseLci(text: string, fileName: string): Session {
+export function parseDrip(text: string, fileName: string): Session {
   const lines = text.split('\n');
-  const session = baseSession('lci', fileName, fileName);
+  const session = baseSession('drip', fileName, fileName);
   const root = session.root;
   const warnings = session.warnings;
 

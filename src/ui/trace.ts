@@ -278,13 +278,13 @@ export class TraceView {
       'div',
       { class: 'trace-names', style: `padding-left:${8 + depth * 14}px` },
       caret,
-      el('span', { class: `dot k-${span.meta?.harness === 'lci' ? 'session' : span.kind}` }),
+      el('span', { class: `dot k-${span.meta?.harness === 'drip' ? 'session' : span.kind}` }),
       el('span', { class: 'name', title: span.name }, span.name),
       el('span', { class: 'dur' }, formatDuration(durationMs(span))),
     );
 
     const bar = el('div', {
-      class: `bar k-${span.meta?.harness === 'lci' ? 'session' : span.kind}${span.ok === false ? ' failed' : ''}`,
+      class: `bar k-${span.meta?.harness === 'drip' ? 'session' : span.kind}${span.ok === false ? ' failed' : ''}`,
       style: `left:${leftFrac * 100}%;width:max(2px,${widthFrac * 100}%)`,
     });
     if (!visible) bar.style.display = 'none';

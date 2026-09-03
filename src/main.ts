@@ -37,8 +37,8 @@ interface Loaded {
   /** The index entry this session was opened from, when it came from the picker. */
   entry: SessionEntry | undefined;
   parents: Map<string, Span>; // child id → parent span
-  /** lci sessions grafted into this tree, by grafted span id. */
-  lciChildren: Map<string, SessionEntry>;
+  /** drip sessions grafted into this tree, by grafted span id. */
+  dripChildren: Map<string, SessionEntry>;
   grafting: boolean;
 }
 
@@ -90,7 +90,7 @@ function main(): void {
     zoom: (span: Span) => zoomTo(span),
     parentOf: (span: Span) => current()?.parents.get(span.id) ?? null,
     openSession: (span: Span) => {
-      const entry = current()?.lciChildren.get(span.id);
+      const entry = current()?.dripChildren.get(span.id);
       if (entry !== undefined) void openEntry(entry);
     },
   };
@@ -202,7 +202,7 @@ function main(): void {
     rebuildIndex();
     renderIndexPanel();
     // Sessions opened before this source was connected can now be grafted.
-    for (const loaded of state.sessions) void graftLciChildren(loaded);
+    for (const loaded of state.sessions) void graftDripChildren(loaded);
     activity.buckets = null; // re-collect (cache hits make it cheap) next time the page shows
     if (activity.page === 'activity') void collectActivity();
   }
@@ -308,7 +308,7 @@ function main(): void {
   }
 
   function addSession(session: Session, fileName: string, entry?: SessionEntry): void {
-    const loaded: Loaded = { session, fileName, entry, parents: new Map(), lciChildren: new Map(), grafting: false };
+    const loaded: Loaded = { session, fileName, entry, parents: new Map(), dripChildren: new Map(), grafting: false };
     reindexParents(loaded);
     state.sessions.push(loaded);
     state.active = state.sessions.length - 1;
@@ -318,7 +318,7 @@ function main(): void {
     showPage('trace');
     renderTabs();
     render(true);
-    if (isHostFormat(session.format)) void graftLciChildren(loaded, entry);
+    if (isHostFormat(session.format)) void graftDripChildren(loaded, entry);
   }
 
   function reindexParents(loaded: Loaded): void {
@@ -326,7 +326,7 @@ function main(): void {
     for (const span of flatten(loaded.session.root)) for (const c of span.children) loaded.parents.set(c.id, span);
   }
 
-  // ---- lci children -------------------------------------------------------
+  // ---- drip children -------------------------------------------------------
   /** The index node for a loaded host session, if the index knows it. */
   function indexNodeFor(session: Session, entry?: SessionEntry): SessionNode | null {
     for (const project of index.projects) {
@@ -341,21 +341,21 @@ function main(): void {
   }
 
   /**
-   * Read every lci session the index nests under this host session (Claude
+   * Read every drip session the index nests under this host session (Claude
    * Code, OpenCode or pi) and graft it under the shell call that launched it
    * (or the active turn), so the waterfall shows the whole multi-harness
    * journey. Runs after the first paint; the trace refreshes in place when
    * it is done.
    */
-  async function graftLciChildren(loaded: Loaded, entry?: SessionEntry): Promise<void> {
+  async function graftDripChildren(loaded: Loaded, entry?: SessionEntry): Promise<void> {
     if (!isHostFormat(loaded.session.format) || loaded.grafting) return;
     const node = indexNodeFor(loaded.session, entry);
     if (node === null) return;
     const have = graftedIds(loaded.session.root);
-    const todo = node.children.filter((c) => c.entry.kind === 'lci' && !have.has(c.entry.id));
+    const todo = node.children.filter((c) => c.entry.kind === 'drip' && !have.has(c.entry.id));
     if (todo.length === 0) return;
     loaded.grafting = true;
-    setStatus(`nesting ${todo.length} lci session${todo.length === 1 ? '' : 's'}…`);
+    setStatus(`nesting ${todo.length} drip session${todo.length === 1 ? '' : 's'}…`);
     let added = 0;
     let empty = 0;
     try {
@@ -369,17 +369,17 @@ function main(): void {
           }
           const host = findLaunchSpan(loaded.session.root, e.startMs);
           const grafted = graftSession(loaded.session.root, host, session, { id: e.id, path: e.path, title: e.title });
-          loaded.lciChildren.set(grafted.id, e);
+          loaded.dripChildren.set(grafted.id, e);
           added += 1;
         } catch (err) {
-          loaded.session.warnings.push(`could not nest lci session ${e.id}: ${err instanceof Error ? err.message : String(err)}`);
+          loaded.session.warnings.push(`could not nest drip session ${e.id}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     } finally {
       loaded.grafting = false;
     }
     setStatus('');
-    if (empty > 0) loaded.session.warnings.push(`${empty} empty lci session${empty === 1 ? '' : 's'} (no events) not nested`);
+    if (empty > 0) loaded.session.warnings.push(`${empty} empty drip session${empty === 1 ? '' : 's'} (no events) not nested`);
     if (added === 0) return;
     applyPricing(loaded.session, effectivePricing()); // rollups now include the children
     reindexParents(loaded);
@@ -554,7 +554,7 @@ function main(): void {
 
   /** Index entries plus sessions that were dropped in and are not in the index. */
   function activitySources(): { entries: SessionEntry[]; extra: Session[] } {
-    const entries = [...index.entries.claude, ...index.entries.lci];
+    const entries = [...index.entries.claude, ...index.entries.drip];
     const known = new Set(entries.map((e) => e.id));
     const extra = state.sessions.map((l) => l.session).filter((s) => !known.has(s.id));
     return { entries, extra };
@@ -600,7 +600,7 @@ function main(): void {
         harnesses,
         harness: activity.harness,
         empty: nothing
-          ? 'Connect ~/.claude or ~/.lci from the session picker (or drop a transcript) to see your activity.'
+          ? 'Connect ~/.claude or ~/.drip from the session picker (or drop a transcript) to see your activity.'
           : buckets === null
             ? 'Reading transcripts…'
             : null,

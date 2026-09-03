@@ -16,7 +16,7 @@ export interface DetailActions {
   select: (span: Span | null) => void;
   zoom: (span: Span) => void;
   parentOf: (span: Span) => Span | null;
-  /** Open a grafted child-harness session (lci) in its own tab. */
+  /** Open a grafted child-harness session (drip) in its own tab. */
   openSession?: (span: Span) => void;
 }
 
@@ -29,12 +29,12 @@ export function renderDetail(pane: HTMLElement, span: Span, session: Session, ac
   pane.textContent = '';
   const parent = actions.parentOf(span);
   const offset = span.startMs - session.root.startMs;
-  const kind = span.meta?.harness === 'lci' ? 'session' : span.kind;
+  const kind = span.meta?.harness === 'drip' ? 'session' : span.kind;
 
   const head = el(
     'div',
     { class: 'detail-head' },
-    el('span', { class: `vt-tag tag-${kind}` }, kind === 'session' ? 'lci' : span.kind),
+    el('span', { class: `vt-tag tag-${kind}` }, kind === 'session' ? 'drip' : span.kind),
     el('span', { class: 'detail-title', title: span.name }, span.name),
     el(
       'button',
@@ -58,16 +58,16 @@ export function renderDetail(pane: HTMLElement, span: Span, session: Session, ac
       btn('Parent', () => {
         if (parent !== null) actions.select(parent);
       }, parent === null),
-      span.meta?.harness === 'lci' && actions.openSession !== undefined
-        ? btn('Open lci session', () => actions.openSession?.(span))
+      span.meta?.harness === 'drip' && actions.openSession !== undefined
+        ? btn('Open drip session', () => actions.openSession?.(span))
         : null,
     ),
   );
-  if (span.meta?.harness === 'lci') {
+  if (span.meta?.harness === 'drip') {
     body.append(
       kv([
-        ['Harness', 'lci'],
-        ['Session', String(span.meta.lciSessionId ?? '')],
+        ['Harness', 'drip'],
+        ['Session', String(span.meta.dripSessionId ?? '')],
         ['Launched by', String(span.meta.launchedBy ?? '')],
       ]),
     );
@@ -194,7 +194,7 @@ function renderTool(pane: HTMLElement, span: Span): void {
         : `${String(span.meta.taskId ?? '')} · no completion notification seen`,
     ]);
   }
-  if (span.meta?.spawned === 'lci') rows.push(['Spawned', 'an lci session (nested below)']);
+  if (span.meta?.spawned === 'drip') rows.push(['Spawned', 'an drip session (nested below)']);
   pane.append(kv(rows));
   const input = p?.input ?? span.toolInput;
   pane.append(section('Input', input !== undefined && input.length > 0 ? pre(input) : el('p', { class: 'muted caption' }, 'not recorded')));
@@ -247,7 +247,7 @@ function renderContainer(pane: HTMLElement, span: Span, actions: DetailActions):
             el(
               'button',
               { type: 'button', class: 'child-row', onclick: (() => actions.select(c)) as EventListener },
-              el('span', { class: `dot k-${c.meta?.harness === 'lci' ? 'session' : c.kind}` }),
+              el('span', { class: `dot k-${c.meta?.harness === 'drip' ? 'session' : c.kind}` }),
               el('span', { class: 'child-name' }, c.name),
               el('span', { class: 'child-dur footnote tabular' }, formatDuration(durationMs(c))),
             ),

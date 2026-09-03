@@ -3,7 +3,7 @@
 Trace viewer for coding-agent sessions.
 
 `seekdeep` reads the transcripts that agent tools already write to disk —
-**Claude Code**, **lci**, **Codex**, **OpenCode**, **pi** — and turns a session into a trace
+**Claude Code**, **drip**, **Codex**, **OpenCode**, **pi** — and turns a session into a trace
 you can dig into: where the wall-clock went, what each model call cost, how
 the prompt cache behaved turn by turn, and which tools dominated.
 
@@ -38,7 +38,7 @@ render happen entirely in your browser.
 | Tool        | Where the files live                                          | What we read                                                                                |
 | ----------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Claude Code | `~/.claude/projects/<slug>/<session-id>.jsonl`                | `assistant` / `user` records, `message.usage` (cache read/create, ephemeral 5m/1h), `tool_use` / `tool_result`, `parentUuid`, `isSidechain`, `timestamp` |
-| lci         | `<repo>/.lci/sessions/<id>/transcript.jsonl`                  | `event` records: `inference` (prompt/cache/completion tokens, `latencyMs`, model, provider), `tool-call` / `tool-result` (`durationMs`, `failed`), `iteration-start`, `loop-start`, `run-summary` |
+| drip        | `~/.drip/projects/<slug>/sessions/<id>/transcript.jsonl` (lci, its TypeScript predecessor, wrote the same files under `~/.lci`) | `event` records: `inference` (prompt/cache/completion tokens, `latencyMs`, model, provider), `tool-call` / `tool-result` (`durationMs`, `failed`), `iteration-start`, `loop-start`, `run-summary` |
 | Codex       | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`                | `session_meta`, `turn_context`, `event_msg` (`task_started`, `task_complete`, `token_count`), `response_item` (`message`, `function_call`, `function_call_output`) |
 | OpenCode    | `~/.local/share/opencode/opencode.db` (SQLite + WAL), or an `opencode export` JSON file | `session` / `message` / `part` rows: `step-finish` tokens (input, output, reasoning, cache read/write) per API call, `tool` parts (`state.time`, `status`), `text` / `reasoning` parts |
 | pi          | `~/.pi/agent/sessions/<cwd-dir>/<timestamp>_<id>.jsonl`       | `session` header (cwd), `message` entries: assistant `usage` (input, output, cacheRead/Write, reasoning), `toolCall` blocks paired with `toolResult` messages, `model_change` |
@@ -47,11 +47,11 @@ Format is auto-detected from the first few records. Unknown files fall back
 to a generic parser that looks for `timestamp` + `usage`-shaped objects.
 
 The session picker connects each harness's home directory (`~/.claude`,
-`~/.lci`, `~/.local/share/opencode`, `~/.pi/agent`) and nests lci runs under
+`~/.drip`, `~/.local/share/opencode`, `~/.pi/agent`) and nests drip runs under
 the Claude Code, OpenCode or pi session that launched them — matched by the
 launching session's scratchpad (Claude Code) or by same working directory and
 time window — and grafts them into that session's waterfall under the shell
-call that ran `lci`. OpenCode's SQLite store is read in the browser with
+call that ran `drip` (or `lci`, its predecessor). OpenCode's SQLite store is read in the browser with
 [sql.js](https://github.com/sql-js/sql.js) (loaded only when that source is
 connected); committed write-ahead-log frames are folded in first, so sessions
 OpenCode has not checkpointed yet still show up.
@@ -94,7 +94,9 @@ we run day to day; when a tool changes its schema, open an issue with a
 
 - Claude Code: verified against real multi-turn sessions (subagents, split
   assistant records, 1h cache writes).
-- lci: `inference` events only exist in recent lci builds; older transcripts
+- drip: the Rust port of lci with the same session format, so `~/.lci`
+  directories connect as the drip source too. `inference` events only exist
+  in recent builds; older transcripts
   still produce loop/tool spans with a "no inference events" warning.
 - Codex: `token_count` / `function_call` handling follows Codex's rollout
   schema but has only been exercised on synthetic fixtures so far.

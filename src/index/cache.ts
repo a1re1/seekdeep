@@ -8,22 +8,22 @@
 
 import { openDb } from './fs.ts';
 import type { SourceFile, SourceKind } from './fs.ts';
-import { claudeTranscripts, lciTranscripts, piTranscripts, scanClaude, scanLci, scanOpencode, scanPi } from './scan.ts';
+import { claudeTranscripts, dripTranscripts, piTranscripts, scanClaude, scanDrip, scanOpencode, scanPi } from './scan.ts';
 import type { CachedEntry, SessionEntry } from './scan.ts';
 
 type FileKind = Exclude<SourceKind, 'opencode'>;
 const TRANSCRIPTS: Record<FileKind, (files: SourceFile[]) => SourceFile[]> = {
   claude: claudeTranscripts,
-  lci: lciTranscripts,
+  drip: dripTranscripts,
   pi: piTranscripts,
 };
-const SCANNERS: Record<FileKind, typeof scanClaude> = { claude: scanClaude, lci: scanLci, pi: scanPi };
+const SCANNERS: Record<FileKind, typeof scanClaude> = { claude: scanClaude, drip: scanDrip, pi: scanPi };
 
 /** A cached SessionEntry plus the freshness stamps of its source files. */
 export interface CacheRecord extends CachedEntry {
   size: number;
   lastModified: number;
-  /** lci siblings (session.json / result.json) whose change invalidates the entry. */
+  /** drip siblings (session.json / result.json) whose change invalidates the entry. */
   deps?: { path: string; size: number; lastModified: number }[];
 }
 
@@ -31,7 +31,7 @@ export interface CacheRecord extends CachedEntry {
 
 /**
  * Scan a connected directory, reusing cached entries for transcripts whose
- * size/lastModified (and, for lci, sibling metadata) are unchanged; only the
+ * size/lastModified (and, for drip, sibling metadata) are unchanged; only the
  * rest is re-read. Progress counts cache hits as already done.
  */
 export async function scanWithCache(
@@ -199,7 +199,7 @@ function toRecord(
     sizeBytes: entry.sizeBytes,
     size: file?.size ?? entry.sizeBytes,
     lastModified: file?.lastModified ?? 0,
-    deps: kind === 'lci' ? lciDeps(entry.path, byPath) : undefined,
+    deps: kind === 'drip' ? dripDeps(entry.path, byPath) : undefined,
   };
 }
 
@@ -207,11 +207,11 @@ function toRecord(
 const MISSING = -1;
 
 /**
- * lci entries also depend on their session.json / result.json siblings.
+ * drip entries also depend on their session.json / result.json siblings.
  * Both slots are always recorded so a sibling that appears later (result.json
  * is written when the session ends) invalidates the cached entry.
  */
-function lciDeps(
+function dripDeps(
   path: string,
   byPath: Map<string, SourceFile>,
 ): { path: string; size: number; lastModified: number }[] {

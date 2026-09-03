@@ -11,7 +11,7 @@ export interface ActivityModel {
   /** Progress line shown while transcripts are being read, or null. */
   progress: string | null;
   preset: string;
-  /** Harnesses present in the data (claude, lci, …); the filter offers All plus each of these. */
+  /** Harnesses present in the data (claude, drip, …); the filter offers All plus each of these. */
   harnesses: string[];
   /** Selected harness, or null for all. */
   harness: string | null;
@@ -96,7 +96,7 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   title.textContent = 'Activity';
   const subtitle = document.createElement('span');
   subtitle.className = 'footnote';
-  subtitle.textContent = 'Your usage across models from ~/.claude and ~/.lci';
+  subtitle.textContent = 'Your usage across models from ~/.claude and ~/.drip';
   const spacer = document.createElement('span');
   spacer.className = 'spacer';
   const status = document.createElement('span');
@@ -108,7 +108,7 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   return toolbar;
 }
 
-/** All | claude | lci | … — filters every card, chart and table row by harness. */
+/** All | claude | drip | … — filters every card, chart and table row by harness. */
 function harnessSeg(model: ActivityModel, actions: ActivityActions): HTMLElement {
   const seg = document.createElement('nav');
   seg.className = 'vt-seg';

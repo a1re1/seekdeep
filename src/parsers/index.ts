@@ -4,14 +4,14 @@ import type { Session } from '../model.ts';
 import { parseClaudeCode } from './claude-code.ts';
 import { parseCodex } from './codex.ts';
 import { parseGeneric } from './generic.ts';
-import { parseLci } from './lci.ts';
+import { parseDrip } from './drip.ts';
 import { flattenOpencodeExport, parseOpencode } from './opencode.ts';
 import { parsePi } from './pi.ts';
 import { tryParse } from './util.ts';
 
 export function detectFormat(lines: string[]): Session['format'] {
   let sawClaude = false;
-  let sawLci = false;
+  let sawDrip = false;
   let sawCodex = false;
   let sawOpencode = false;
   let sawPi = false;
@@ -55,7 +55,7 @@ export function detectFormat(lines: string[]): Session['format'] {
       (type === 'event' && typeof record['kind'] === 'string') ||
       (type === 'goal' && record['goalId'] !== undefined)
     ) {
-      sawLci = true;
+      sawDrip = true;
     }
 
     if (
@@ -72,7 +72,7 @@ export function detectFormat(lines: string[]): Session['format'] {
   }
 
   if (sawClaude) return 'claude-code';
-  if (sawLci) return 'lci';
+  if (sawDrip) return 'drip';
   if (sawCodex) return 'codex';
   if (sawOpencode) return 'opencode';
   if (sawPi) return 'pi';
@@ -100,8 +100,8 @@ export function parseTranscript(text: string, fileName: string): Session {
       case 'claude-code':
         session = parseClaudeCode(text, fileName);
         break;
-      case 'lci':
-        session = parseLci(text, fileName);
+      case 'drip':
+        session = parseDrip(text, fileName);
         break;
       case 'codex':
         session = parseCodex(text, fileName);
