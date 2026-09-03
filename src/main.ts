@@ -77,6 +77,7 @@ function main(): void {
     buckets: null as UsageBucket[] | null, // null until the first collection
     collecting: false,
     progress: null as string | null,
+    skipped: [] as string[], // transcript paths the last collection could not read
   };
 
   trace.onSelect = (span) => renderDetailFor(span);
@@ -564,14 +565,16 @@ function main(): void {
     if (activity.collecting) return;
     const { entries, extra } = activitySources();
     activity.collecting = true;
+    activity.skipped = []; // a warning must describe this run, not the last one
     activity.progress = entries.length > 0 ? `reading 0 / ${entries.length} transcripts` : null;
     renderActivityPage();
     try {
-      const indexed = await collectBuckets(entries, (done, total) => {
+      const { buckets: indexed, skipped } = await collectBuckets(entries, (done, total) => {
         activity.progress = `reading ${done} / ${total} transcripts`;
         renderActivityPage();
       });
       activity.buckets = mergeBuckets([indexed, ...extra.map(bucketSession)]);
+      activity.skipped = skipped;
     } catch (err) {
       setStatus(`failed to read transcripts: ${err instanceof Error ? err.message : String(err)}`, true);
       activity.buckets ??= [];
@@ -596,6 +599,7 @@ function main(): void {
       {
         activity: buckets === null || nothing ? null : aggregate(buckets, effectivePricing(), rangeFor(preset, Date.now(), buckets)),
         progress: activity.progress,
+        skipped: activity.skipped,
         preset: activity.preset,
         harnesses,
         harness: activity.harness,

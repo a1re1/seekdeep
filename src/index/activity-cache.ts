@@ -32,14 +32,16 @@ export interface ActivityRecord {
  * Collect UsageBuckets across every entry, reading whole transcripts only
  * where the cached record's size/lastModified no longer matches. Files are
  * processed in batches of 8 with progress reported after each batch; a bad
- * file is skipped, never thrown. Returns the merged bucket list.
+ * file is skipped, never thrown. Returns the merged bucket list plus the
+ * paths of the transcripts that could not be read, so the page can say so.
  */
 export async function collectBuckets(
   entries: SessionEntry[],
   onProgress?: (done: number, total: number) => void,
-): Promise<UsageBucket[]> {
+): Promise<{ buckets: UsageBucket[]; skipped: string[] }> {
   const cache = await loadActivityCache();
   const lists: UsageBucket[][] = [];
+  const skipped: string[] = [];
   const stale: SessionEntry[] = [];
   let done = 0;
   for (const entry of entries) {
@@ -55,13 +57,17 @@ export async function collectBuckets(
   for (let i = 0; i < stale.length; i += BATCH_SIZE) {
     const batch = stale.slice(i, i + BATCH_SIZE);
     const records = await Promise.all(batch.map(readRecord));
-    const fresh = records.filter((rec): rec is ActivityRecord => rec !== null);
+    const fresh: ActivityRecord[] = [];
+    records.forEach((rec, j) => {
+      if (rec === null) skipped.push(batch[j]!.path);
+      else fresh.push(rec);
+    });
     for (const rec of fresh) lists.push(withHarness(rec.buckets, rec.kind));
     await saveActivityRecords(fresh);
     done += batch.length;
     onProgress?.(done, entries.length);
   }
-  return mergeBuckets(lists);
+  return { buckets: mergeBuckets(lists), skipped };
 }
 
 /** Records cached before buckets carried a harness get it from their source kind. */
@@ -97,20 +103,34 @@ export async function clearActivityCache(kind: SourceKind): Promise<void> {
 
 // ---- internals ------------------------------------------------------------
 
-/** Full-read one transcript into a storable record; null when it fails. */
-async function readRecord(entry: SessionEntry): Promise<ActivityRecord | null> {
-  try {
-    const text = await entry.file.text();
-    return {
-      schema: ACTIVITY_SCHEMA,
-      kind: entry.kind,
-      path: entry.path,
-      size: entry.file.size,
-      lastModified: entry.file.lastModified,
-      buckets: bucketSession(parseTranscript(text, entry.path)),
-    };
-  } catch {
-    return null; // one unreadable transcript must not sink the whole page
+/**
+ * Full-read one transcript into a storable record; null when it fails. The
+ * scan-time File snapshot throws once the transcript has changed on disk
+ * (any session still being written), which used to drop exactly the busiest
+ * recent sessions from the totals — so on failure re-snapshot from the
+ * handle and try once more, stamping the record with the fresh size/mtime.
+ */
+export async function readRecord(entry: SessionEntry): Promise<ActivityRecord | null> {
+  let file = entry.file;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const text = await file.text();
+      return {
+        schema: ACTIVITY_SCHEMA,
+        kind: entry.kind,
+        path: entry.path,
+        size: file.size,
+        lastModified: file.lastModified,
+        buckets: bucketSession(parseTranscript(text, entry.path)),
+      };
+    } catch {
+      if (attempt > 0 || file.refresh === undefined) return null; // one unreadable transcript must not sink the whole page
+      try {
+        file = await file.refresh();
+      } catch {
+        return null;
+      }
+    }
   }
 }
 
