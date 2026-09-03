@@ -10,6 +10,8 @@ export interface ActivityModel {
   activity: Activity | null;
   /** Progress line shown while transcripts are being read, or null. */
   progress: string | null;
+  /** Transcript paths the last collection could not read; the totals omit them. */
+  skipped: string[];
   preset: string;
   /** Harnesses present in the data (claude, drip, …); the filter offers All plus each of these. */
   harnesses: string[];
@@ -47,6 +49,7 @@ function svgEl(tag: string, attrs: Record<string, string | number> = {}): SVGEle
 export function renderActivity(host: HTMLElement, model: ActivityModel, actions: ActivityActions): void {
   host.replaceChildren();
   host.append(buildToolbar(model, actions));
+  if (model.skipped.length > 0 && model.progress === null) host.append(buildSkippedBar(model.skipped));
   if (model.empty !== null) {
     const note = document.createElement('p');
     note.className = 'card activity-empty footnote';
@@ -106,6 +109,22 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   if (model.harnesses.length > 0) toolbar.append(harnessSeg(model, actions));
   toolbar.append(selectWrap, rescan);
   return toolbar;
+}
+
+/** Small warning that N transcripts were unreadable, so every number below is a floor. */
+export function buildSkippedBar(skipped: string[]): HTMLElement {
+  const n = skipped.length;
+  const bar = document.createElement('div');
+  bar.className = 'warn-bar';
+  const count = document.createElement('span');
+  count.className = 'warn-count';
+  count.textContent = `${n} transcript${n === 1 ? '' : 's'} skipped`;
+  const text = document.createElement('span');
+  text.className = 'warn-text footnote';
+  text.title = skipped.join('\n');
+  text.textContent = 'could not be read, so the totals are missing their usage · Rescan to retry';
+  bar.append(icon('circle-alert', 14), count, text);
+  return bar;
 }
 
 /** All | claude | drip | … — filters every card, chart and table row by harness. */

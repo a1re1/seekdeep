@@ -16,6 +16,13 @@ export interface SourceFile {
   text(range?: { start?: number; end?: number }): Promise<string>;
   /** Whole-file bytes (binary sources such as OpenCode's SQLite database). */
   bytes?(): Promise<Uint8Array>;
+  /**
+   * Take a fresh snapshot from the underlying handle. A File captured at scan
+   * time throws NotReadableError once the transcript changes on disk (an
+   * active session), so readers re-snapshot and retry. Absent for files that
+   * arrived without a handle (drag-and-drop, <input webkitdirectory>).
+   */
+  refresh?(): Promise<SourceFile>;
 }
 
 export type SourceKind = 'claude' | 'drip' | 'opencode' | 'pi';
@@ -162,7 +169,7 @@ async function walk(
   const files: Promise<SourceFile>[] = [];
   for await (const entry of dir.values()) {
     if (entry.kind === 'file') {
-      if (isWanted(entry.name)) files.push(entry.getFile().then((f) => makeSourceFile(f, prefix + entry.name)));
+      if (isWanted(entry.name)) files.push(entry.getFile().then((f) => makeSourceFile(f, prefix + entry.name, entry)));
     } else if (!SKIP_DIRS.has(entry.name)) {
       subdirs.push(entry);
     }
@@ -171,8 +178,8 @@ async function walk(
   for (const sub of subdirs) await walk(sub, `${prefix}${sub.name}/`, out, depth + 1, maxDepth);
 }
 
-export function makeSourceFile(file: File, path: string): SourceFile {
-  return {
+export function makeSourceFile(file: File, path: string, handle?: FsFileHandle): SourceFile {
+  const source: SourceFile = {
     path,
     name: file.name,
     size: file.size,
@@ -184,6 +191,8 @@ export function makeSourceFile(file: File, path: string): SourceFile {
     },
     bytes: async (): Promise<Uint8Array> => new Uint8Array(await file.arrayBuffer()),
   };
+  if (handle !== undefined) source.refresh = async () => makeSourceFile(await handle.getFile(), path, handle);
+  return source;
 }
 
 // ---- <input webkitdirectory> fallback (nothing persisted) ----------------
