@@ -50,9 +50,9 @@ beforeAll(() => {
   const message = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)');
   const part = db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)');
   db.exec("INSERT INTO project VALUES ('p1', '/Users/t/proj', 'proj')");
-  session.run(ROOT, 'p1', null, 'calm-river', CWD, 'Run lci', '1.18.26', t0, t0 + 60_000, '{"providerID":"openai","modelID":"gpt-5.4"}');
+  session.run(ROOT, 'p1', null, 'calm-river', CWD, 'Run drip', '1.18.26', t0, t0 + 60_000, '{"providerID":"openai","modelID":"gpt-5.4"}');
   message.run('msg_u1', ROOT, t0, t0, JSON.stringify({ role: 'user', time: { created: t0 }, agent: 'build' }));
-  part.run('prt_u1', 'msg_u1', ROOT, t0, t0, JSON.stringify({ type: 'text', text: 'run lci please' }));
+  part.run('prt_u1', 'msg_u1', ROOT, t0, t0, JSON.stringify({ type: 'text', text: 'run drip please' }));
   message.run(
     'msg_a1',
     ROOT,
@@ -80,7 +80,7 @@ beforeAll(() => {
       type: 'tool',
       tool: 'bash',
       callID: 'call_1',
-      state: { status: 'completed', input: { command: 'lci --version' }, output: 'lci 0.97.0\n', time: { start: t0 + 2000, end: t0 + 8000 } },
+      state: { status: 'completed', input: { command: 'drip --version' }, output: 'drip 0.97.0\n', time: { start: t0 + 2000, end: t0 + 8000 } },
     }),
   );
   part.run(
@@ -96,7 +96,7 @@ beforeAll(() => {
   session.run(CHILD, 'p1', ROOT, 'quiet-fern', CWD, 'subagent: explore', '1.18.26', t0 + 3000, t0 + 4000, null);
   message.run('msg_c1', CHILD, t0 + 3000, t0 + 3000, JSON.stringify({ role: 'user', time: { created: t0 + 3000 } }));
   part.run('prt_c1', 'msg_c1', CHILD, t0 + 3000, t0 + 3000, JSON.stringify({ type: 'text', text: 'explore the repo' }));
-  db.exec(`UPDATE session SET title = 'Run lci (renamed in WAL)' WHERE id = '${ROOT}'`);
+  db.exec(`UPDATE session SET title = 'Run drip (renamed in WAL)' WHERE id = '${ROOT}'`);
   dbBytes = new Uint8Array(readFileSync(path));
   walBytes = new Uint8Array(readFileSync(`${path}-wal`));
   db.close();
@@ -125,7 +125,7 @@ describe('applyWal', () => {
     expect(stale.exec('SELECT COUNT(*) FROM session')[0]?.values[0]?.[0]).toBe(1);
     const fresh = new SQL.Database(applyWal(dbBytes, walBytes));
     expect(fresh.exec('SELECT COUNT(*) FROM session')[0]?.values[0]?.[0]).toBe(2);
-    expect(fresh.exec(`SELECT title FROM session WHERE id = '${ROOT}'`)[0]?.values[0]?.[0]).toBe('Run lci (renamed in WAL)');
+    expect(fresh.exec(`SELECT title FROM session WHERE id = '${ROOT}'`)[0]?.values[0]?.[0]).toBe('Run drip (renamed in WAL)');
   });
 
   test('garbage or truncated logs leave the image untouched', () => {
@@ -157,7 +157,7 @@ describe('scanOpencode', () => {
     const e = entries[0]!;
     expect(e.kind).toBe('opencode');
     expect(e.cwd).toBe(CWD);
-    expect(e.title).toBe('Run lci (renamed in WAL)');
+    expect(e.title).toBe('Run drip (renamed in WAL)');
     expect(e.startMs).toBe(Date.parse('2026-09-02T10:00:00Z'));
     expect(e.endMs).toBe(Date.parse('2026-09-02T10:01:00Z'));
     expect(e.path).toBe(`opencode.db#${ROOT}`);
@@ -180,25 +180,25 @@ describe('scanOpencode', () => {
 });
 
 describe('buildIndex with OpenCode hosts', () => {
-  test('an lci run in the same cwd during the session nests under it', async () => {
+  test('an drip run in the same cwd during the session nests under it', async () => {
     const [host] = await scanOpencode(files());
-    const lci: SessionEntry = {
-      kind: 'lci',
-      id: 'lci-1',
-      path: 'projects/x/sessions/lci-1/transcript.jsonl',
+    const drip: SessionEntry = {
+      kind: 'drip',
+      id: 'drip-1',
+      path: 'projects/x/sessions/drip-1/transcript.jsonl',
       slug: 'x',
       cwd: CWD,
       branch: null,
-      title: 'lci child',
+      title: 'drip child',
       startMs: host!.startMs + 5000,
       endMs: host!.startMs + 30_000,
       sizeBytes: 1,
-      file: bin('projects/x/sessions/lci-1/transcript.jsonl', new Uint8Array()),
+      file: bin('projects/x/sessions/drip-1/transcript.jsonl', new Uint8Array()),
     };
-    const projects = buildIndex([host!, lci]);
+    const projects = buildIndex([host!, drip]);
     expect(projects).toHaveLength(1);
     const roots = projects[0]!.worktrees.flatMap((g) => g.sessions);
     expect(roots.map((n) => n.entry.id)).toEqual([ROOT]);
-    expect(roots[0]!.children.map((n) => n.entry.id)).toEqual(['lci-1']);
+    expect(roots[0]!.children.map((n) => n.entry.id)).toEqual(['drip-1']);
   });
 });

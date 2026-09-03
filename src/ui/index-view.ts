@@ -1,5 +1,5 @@
 // Session picker: a glass panel with a sidebar (sources to connect, projects
-// to filter by) and a flat, sortable list of sessions with lci children
+// to filter by) and a flat, sortable list of sessions with drip children
 // nested under the host session (Claude Code, OpenCode, pi) that ran them. Pure rendering: state lives in the
 // caller-provided model and every user action is delegated to the actions
 // callbacks, so main.ts owns connections, scanning and opening.
@@ -52,7 +52,7 @@ const SORTS: Array<[SortKey, string]> = [
 ];
 
 // UI choices that should survive re-renders: the project/source filter, the
-// sort order, and which parents have their lci children expanded.
+// sort order, and which parents have their drip children expanded.
 const ui = {
   project: null as string | null, // ProjectGroup.root
   source: null as SourceKind | null,
@@ -122,7 +122,7 @@ function sidebar(model: IndexModel, actions: IndexActions): HTMLElement {
       el('p', { class: 'picker-note footnote' },
         SOURCE_KINDS.some((k) => model.sources[k].connected)
           ? 'Connected, but no transcripts found yet.'
-          : 'Connect a harness directory (~/.claude, ~/.lci, ~/.local/share/opencode, ~/.pi/agent) to index your agent sessions. Directories are read locally; nothing is uploaded.',
+          : 'Connect a harness directory (~/.claude, ~/.drip, ~/.local/share/opencode, ~/.pi/agent) to index your agent sessions. Directories are read locally; nothing is uploaded.',
       ),
     );
   }
@@ -328,7 +328,7 @@ function sortNodes(items: Candidate[], sort: SortKey): Candidate[] {
   return [...items].sort(by[sort]);
 }
 
-/** One session row plus its nested lci children. */
+/** One session row plus its nested drip children. */
 function sessionBlock(item: Candidate, q: string, actions: IndexActions): HTMLElement {
   const { node, kids } = item;
   const entry = node.entry;
@@ -343,7 +343,7 @@ function sessionBlock(item: Candidate, q: string, actions: IndexActions): HTMLEl
     'span',
     {
       class: `picker-chevron${hasKids ? '' : ' picker-chevron--none'}`,
-      ...(hasKids ? { role: 'button', title: 'toggle nested lci sessions' } : {}),
+      ...(hasKids ? { role: 'button', title: 'toggle nested drip sessions' } : {}),
       onclick: ((e: Event) => {
         if (!hasKids) return;
         e.stopPropagation();
@@ -370,7 +370,7 @@ function sessionRow(
   const e = node.entry;
   const wt = e.cwd !== null ? (splitWorktree(e.cwd).worktree ?? 'main') : null;
   const meta = [ui.project === null ? project : null, wt, e.branch].filter((s): s is string => s !== null && s !== '').join(' · ');
-  const lciCount = node.children.length;
+  const dripCount = node.children.length;
   const open = (): void => actions.open(e);
   return el(
     'div',
@@ -393,7 +393,7 @@ function sessionRow(
     el(
       'div',
       { class: 'picker-session-cols footnote tabular' },
-      lciCount > 0 ? el('span', { class: 'picker-lci-count' }, `${lciCount} lci`) : el('span', { class: 'picker-lci-count' }),
+      dripCount > 0 ? el('span', { class: 'picker-drip-count' }, `${dripCount} drip`) : el('span', { class: 'picker-drip-count' }),
       el('span', { class: 'picker-col picker-col--size' }, formatBytes(e.sizeBytes)),
       el('span', { class: 'picker-col picker-col--dur' }, formatDuration(Math.max(0, e.endMs - e.startMs))),
       el('span', { class: 'picker-col picker-col--when' }, dateLabel(e.startMs)),

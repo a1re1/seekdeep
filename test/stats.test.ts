@@ -114,12 +114,12 @@ describe('aggregate', () => {
   test('buckets carry their harness and merge keeps harnesses apart', () => {
     const lists = [
       [bucket(h, 'claude-opus-5', { input: 10 })],
-      [{ ...bucket(h, 'claude-opus-5', { input: 5 }), harness: 'lci' }],
-      [{ ...bucket(h, 'claude-opus-5', { input: 1 }), harness: 'lci' }],
+      [{ ...bucket(h, 'claude-opus-5', { input: 5 }), harness: 'drip' }],
+      [{ ...bucket(h, 'claude-opus-5', { input: 1 }), harness: 'drip' }],
     ];
     const merged = mergeBuckets(lists);
     expect(merged).toHaveLength(2);
-    expect(merged.find((b) => b.harness === 'lci')?.input).toBe(6);
+    expect(merged.find((b) => b.harness === 'drip')?.input).toBe(6);
     expect(merged.find((b) => b.harness === undefined)?.input).toBe(10);
   });
 

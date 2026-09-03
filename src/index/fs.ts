@@ -18,7 +18,7 @@ export interface SourceFile {
   bytes?(): Promise<Uint8Array>;
 }
 
-export type SourceKind = 'claude' | 'lci' | 'opencode' | 'pi';
+export type SourceKind = 'claude' | 'drip' | 'opencode' | 'pi';
 
 export interface SourceSpec {
   /** Where the harness keeps its data, shown as the source label. */
@@ -32,16 +32,16 @@ export interface SourceSpec {
 /** Every harness the index can connect, in display order. */
 export const SOURCES: Record<SourceKind, SourceSpec> = {
   claude: { label: '~/.claude', sessionsDir: 'projects', maxDepth: 8 },
-  lci: { label: '~/.lci', sessionsDir: 'projects', maxDepth: 8 },
+  drip: { label: '~/.drip', sessionsDir: 'projects', maxDepth: 8 },
   opencode: { label: '~/.local/share/opencode', sessionsDir: null, maxDepth: 0 },
   pi: { label: '~/.pi/agent', sessionsDir: 'sessions', maxDepth: 8 },
 };
 
 export const SOURCE_KINDS = Object.keys(SOURCES) as SourceKind[];
 
-/** Whether sessions of this kind can launch lci (and so host lci children). */
+/** Whether sessions of this kind can launch drip (and so host drip children). */
 export function isHostKind(kind: SourceKind): boolean {
-  return kind !== 'lci';
+  return kind !== 'drip';
 }
 
 // ---- File System Access API, typed locally (no dependencies) -------------
@@ -66,7 +66,7 @@ type PickerWindow = {
 };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'outputs', 'images']);
-// Claude/lci keep sessions under projects/, pi under sessions/; the rest of
+// Claude/drip keep sessions under projects/, pi under sessions/; the rest of
 // each home (caches, shell snapshots, plugins, OpenCode's snapshot/ and log/
 // trees…) is thousands of files we never need to stat.
 const WANTED_FILES = new Set(['session.json', 'result.json', OPENCODE_DB, `${OPENCODE_DB}-wal`]);
@@ -283,8 +283,19 @@ async function loadHandle(kind: SourceKind): Promise<FsDirHandle | null> {
   try {
     return await new Promise<FsDirHandle | null>((resolve, reject) => {
       const tx = db.transaction('dirs', 'readonly');
-      const req = tx.objectStore('dirs').get(kind);
-      req.onsuccess = () => resolve((req.result as FsDirHandle | undefined) ?? null);
+      const store = tx.objectStore('dirs');
+      const req = store.get(kind);
+      req.onsuccess = () => {
+        const found = req.result as FsDirHandle | undefined;
+        if (found !== undefined || kind !== 'drip') {
+          resolve(found ?? null);
+          return;
+        }
+        // A handle stored when this source was still called lci keeps working.
+        const legacy = store.get('lci');
+        legacy.onsuccess = () => resolve((legacy.result as FsDirHandle | undefined) ?? null);
+        legacy.onerror = () => resolve(null);
+      };
       req.onerror = () => reject(req.error ?? new Error('indexedDB: read failed'));
     });
   } catch {

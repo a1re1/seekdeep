@@ -17,7 +17,7 @@ export interface UsageBucket {
   hourMs: number;
   model: string;
   provider?: string;
-  /** Harness that made the calls (claude, lci, codex, …); absent on records cached before it existed. */
+  /** Harness that made the calls (claude, drip, codex, …); absent on records cached before it existed. */
   harness?: string;
   requests: number;
   input: number;
@@ -95,7 +95,7 @@ export interface Activity {
 
 /**
  * Bucket every model span of a session by (UTC hour, model). Grafted nested
- * sessions may carry spans with `meta.harness === 'lci'` — they are real
+ * sessions may carry spans with `meta.harness === 'drip'` — they are real
  * model calls, so they are included like any other model span.
  */
 export function bucketSession(session: Session): UsageBucket[] {

@@ -11,7 +11,7 @@
 //   (input excludes cached tokens; `reasoning` is a subset of output).
 //   Each `toolCall` content block → a `tool` span from the assistant entry
 //   to the matching `toolResult` message (toolCallId). For `bash` the tool
-//   payload input is the raw command string so lci launches are detectable.
+//   payload input is the raw command string so drip launches are detectable.
 // - model_change                     → provider/model for later messages.
 // - compaction / branch_summary      → a `model` span when they carry usage.
 // - thinking_level_change, custom, custom_message, label → ignored;

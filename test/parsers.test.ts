@@ -3,7 +3,7 @@ import { detectFormat, parseTranscript } from '../src/parsers/index.ts';
 import { flatten, sumUsage, type Span } from '../src/model.ts';
 import { capText } from '../src/parsers/util.ts';
 import { flattenOpencodeExport } from '../src/parsers/opencode.ts';
-import { isLciLaunch } from '../src/graft.ts';
+import { isDripLaunch } from '../src/graft.ts';
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}.jsonl`, import.meta.url)).text();
 const ms = (iso: string) => Date.parse(iso);
@@ -12,8 +12,8 @@ const byKind = (root: Span, kind: Span['kind']) => flatten(root).filter((s) => s
 describe('detectFormat', () => {
   for (const [name, format] of [
     ['claude-code', 'claude-code'],
-    ['lci', 'lci'],
-    ['lci-legacy', 'lci'],
+    ['drip', 'drip'],
+    ['drip-legacy', 'drip'],
     ['codex', 'codex'],
     ['opencode', 'opencode'],
     ['pi', 'pi'],
@@ -93,11 +93,11 @@ describe('claude-code background tasks', () => {
   const rec = (o: Record<string, unknown>) => JSON.stringify({ sessionId: 'bg', isSidechain: false, ...o });
   const usage = { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 };
   const lines = [
-    rec({ type: 'user', uuid: 'u1', parentUuid: null, timestamp: T('00:00.000'), message: { role: 'user', content: 'build it with lci' } }),
-    rec({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', timestamp: T('00:01.000'), message: { id: 'm1', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'tool_use', id: 'tl', name: 'Bash', input: { command: 'lci --goal-file goal.md', run_in_background: true } }], stop_reason: 'tool_use', usage } }),
+    rec({ type: 'user', uuid: 'u1', parentUuid: null, timestamp: T('00:00.000'), message: { role: 'user', content: 'build it with drip' } }),
+    rec({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', timestamp: T('00:01.000'), message: { id: 'm1', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'tool_use', id: 'tl', name: 'Bash', input: { command: 'drip --goal-file goal.md', run_in_background: true } }], stop_reason: 'tool_use', usage } }),
     rec({ type: 'user', uuid: 'u2', parentUuid: 'a1', timestamp: T('00:02.000'), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tl', content: 'Command running in background with ID: task9. Output is being written to: /tmp/x/tasks/task9.output.' }] } }),
     rec({ type: 'assistant', uuid: 'a2', parentUuid: 'u2', timestamp: T('00:03.000'), message: { id: 'm2', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'text', text: 'waiting' }], stop_reason: 'end_turn', usage } }),
-    rec({ type: 'user', uuid: 'u3', parentUuid: 'a2', timestamp: T('12:00.000'), message: { role: 'user', content: '<task-notification>\n<task-id>task9</task-id>\n<tool-use-id>tl</tool-use-id>\n<status>completed</status>\n<summary>Background command "Run lci on the goal" completed (exit code 0)</summary>\n</task-notification>' } }),
+    rec({ type: 'user', uuid: 'u3', parentUuid: 'a2', timestamp: T('12:00.000'), message: { role: 'user', content: '<task-notification>\n<task-id>task9</task-id>\n<tool-use-id>tl</tool-use-id>\n<status>completed</status>\n<summary>Background command "Run drip on the goal" completed (exit code 0)</summary>\n</task-notification>' } }),
     rec({ type: 'assistant', uuid: 'a3', parentUuid: 'u3', timestamp: T('12:01.000'), message: { id: 'm3', model: 'claude-opus-5', role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage } }),
   ].join('\n');
 
@@ -117,8 +117,8 @@ describe('claude-code background tasks', () => {
   test('task-notification turns are named from their summary', () => {
     const s = parseTranscript(lines, 'bg.jsonl');
     const names = byKind(s.root, 'turn').map((t) => t.name);
-    expect(names[0]).toBe('build it with lci');
-    expect(names[1]).toBe('task: "Run lci on the goal" completed (exit code 0)');
+    expect(names[0]).toBe('build it with drip');
+    expect(names[1]).toBe('task: "Run drip on the goal" completed (exit code 0)');
   });
 });
 
@@ -151,9 +151,9 @@ describe('claude-code parallel subagents', () => {
   });
 });
 
-describe('lci parser', () => {
+describe('drip parser', () => {
   test('inference → model span with input = prompt − cacheRead − cacheWrite and start = at − latency', async () => {
-    const s = parseTranscript(await fixture('lci'), 'transcript.jsonl');
+    const s = parseTranscript(await fixture('drip'), 'transcript.jsonl');
     const models = byKind(s.root, 'model');
     expect(models).toHaveLength(2);
     const first = models.find((m) => m.usage?.output === 200)!;
@@ -166,7 +166,7 @@ describe('lci parser', () => {
   });
 
   test('tool-call/tool-result pair by callId; loops become turns', async () => {
-    const s = parseTranscript(await fixture('lci'), 'transcript.jsonl');
+    const s = parseTranscript(await fixture('drip'), 'transcript.jsonl');
     const tools = byKind(s.root, 'tool');
     expect(tools).toHaveLength(2);
     const bash = tools.find((t) => t.toolName === 'BASH')!;
@@ -178,7 +178,7 @@ describe('lci parser', () => {
   });
 
   test('legacy transcript without inference events warns and has no model spans', async () => {
-    const s = parseTranscript(await fixture('lci-legacy'), 'transcript.jsonl');
+    const s = parseTranscript(await fixture('drip-legacy'), 'transcript.jsonl');
     expect(byKind(s.root, 'model')).toHaveLength(0);
     expect(byKind(s.root, 'tool')).toHaveLength(2);
     expect(s.warnings.some((w) => /no inference/i.test(w))).toBe(true);
@@ -242,7 +242,7 @@ describe('pi parser', () => {
     expect(bash.payload?.input).toBe('lci --version');
     expect(bash.payload?.output).toBe('lci 0.97.0\n');
     expect(bash.endMs).toBe(Date.parse('2026-09-02T11:22:53.459Z'));
-    expect(isLciLaunch(bash)).toBe(true);
+    expect(isDripLaunch(bash)).toBe(true);
   });
 
   test('model_change sets the model for messages without one; unmatched calls warn', () => {
@@ -336,10 +336,10 @@ describe('opencode parser', () => {
       { type: 'opencode.session', data: { id: 'ses_a', directory: '/p', title: 'Root', version: '1.18.26', time: { created: t0, updated: t0 + 20_000 } } },
       { type: 'opencode.session', data: { id: 'ses_b', parentID: 'ses_a', directory: '/p', title: 'explore', version: '1.18.26', time: { created: t0 + 3000, updated: t0 + 6000 } } },
       { type: 'opencode.message', data: { id: 'm1', sessionID: 'ses_a', role: 'user', time: { created: t0 } } },
-      { type: 'opencode.part', data: { id: 'p1', sessionID: 'ses_a', messageID: 'm1', type: 'text', text: 'run lci' } },
+      { type: 'opencode.part', data: { id: 'p1', sessionID: 'ses_a', messageID: 'm1', type: 'text', text: 'run drip' } },
       { type: 'opencode.message', data: { id: 'm2', sessionID: 'ses_a', role: 'assistant', modelID: 'gpt-5.4', providerID: 'openai', time: { created: t0 + 1000, completed: t0 + 10_000 } } },
       { type: 'opencode.part', data: { id: 'p2', sessionID: 'ses_a', messageID: 'm2', type: 'step-start' } },
-      { type: 'opencode.part', data: { id: 'p3', sessionID: 'ses_a', messageID: 'm2', type: 'tool', tool: 'bash', callID: 'c1', state: { status: 'completed', input: { command: 'lci --json "do it"' }, output: 'ok', time: { start: t0 + 2000, end: t0 + 9000 } } } },
+      { type: 'opencode.part', data: { id: 'p3', sessionID: 'ses_a', messageID: 'm2', type: 'tool', tool: 'bash', callID: 'c1', state: { status: 'completed', input: { command: 'drip --json "do it"' }, output: 'ok', time: { start: t0 + 2000, end: t0 + 9000 } } } },
       { type: 'opencode.part', data: { id: 'p4', sessionID: 'ses_a', messageID: 'm2', type: 'step-finish', reason: 'tool-calls', tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 2, write: 1 } } } },
       { type: 'opencode.message', data: { id: 'm3', sessionID: 'ses_b', role: 'user', time: { created: t0 + 3000 } } },
       { type: 'opencode.part', data: { id: 'p5', sessionID: 'ses_b', messageID: 'm3', type: 'text', text: 'look around' } },
@@ -350,8 +350,8 @@ describe('opencode parser', () => {
     const s = parseTranscript(recs.map((r) => JSON.stringify(r)).join('\n'), 'oc.jsonl');
     expect(s.format).toBe('opencode');
     const bash = flatten(s.root).find((sp) => sp.kind === 'tool')!;
-    expect(bash.payload?.input).toBe('lci --json "do it"');
-    expect(isLciLaunch(bash)).toBe(true);
+    expect(bash.payload?.input).toBe('drip --json "do it"');
+    expect(isDripLaunch(bash)).toBe(true);
     expect(bash.startMs).toBe(t0 + 2000);
     expect(bash.endMs).toBe(t0 + 9000);
     const model = flatten(s.root).find((sp) => sp.kind === 'model')!;
@@ -410,7 +410,7 @@ describe('generic parser', () => {
 });
 
 describe('invariants', () => {
-  for (const name of ['claude-code', 'lci', 'lci-legacy', 'codex', 'opencode', 'pi', 'garbage']) {
+  for (const name of ['claude-code', 'drip', 'drip-legacy', 'codex', 'opencode', 'pi', 'garbage']) {
     test(`${name}: endMs >= startMs and children within parents`, async () => {
       const s = parseTranscript(await fixture(name), `${name}.jsonl`);
       const check = (span: Span) => {
@@ -466,8 +466,8 @@ describe('payloads (detail pane data)', () => {
     expect(m5.payload?.newContext?.[0]?.text).toBe('now run the tests');
   });
 
-  test('lci: tool payloads and inference newContext (goal + tool results)', async () => {
-    const s = parseTranscript(await fixture('lci'), 'transcript.jsonl');
+  test('drip: tool payloads and inference newContext (goal + tool results)', async () => {
+    const s = parseTranscript(await fixture('drip'), 'transcript.jsonl');
     const models = byKind(s.root, 'model');
     const tools = byKind(s.root, 'tool');
     expect(tools.find((t) => t.toolName === 'BASH')!.payload?.output).toContain('exit code 0');

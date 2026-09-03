@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findLaunchSpan, graftSession, graftedIds, isEmptySession, isLciLaunch } from '../src/graft.ts';
+import { findLaunchSpan, graftSession, graftedIds, isEmptySession, isDripLaunch } from '../src/graft.ts';
 import type { Session, Span } from '../src/model.ts';
 import { flatten } from '../src/model.ts';
 import { makeRoot, makeSpan } from '../src/parsers/util.ts';
@@ -14,11 +14,11 @@ function tree(): { root: Span; turn1: Span; turn2: Span; launch: Span; other: Sp
   const other = makeSpan('tool', 'Bash', at(5), at(6), null, { toolName: 'Bash', toolInput: '{"command":"ls -la"}' });
   const launch = makeSpan('tool', 'Bash', at(10), at(400), null, {
     toolName: 'Bash',
-    toolInput: '{"command":"lci --goal-file goal.md"}',
-    payload: { input: '{\n  "command": "lci --goal-file goal.md"\n}' },
+    toolInput: '{"command":"drip --goal-file goal.md"}',
+    payload: { input: '{\n  "command": "drip --goal-file goal.md"\n}' },
     meta: { background: true },
   });
-  const turn2 = makeSpan('turn', 'task: lci completed', at(400), at(410), 'root');
+  const turn2 = makeSpan('turn', 'task: drip completed', at(400), at(410), 'root');
   turn1.children.push(other, launch);
   root.children.push(turn1, turn2);
   return { root, turn1, turn2, launch, other };
@@ -28,23 +28,28 @@ function child(id: string, start: number, end: number): Session {
   const root = makeRoot(id, `goal ${id}`, at(start));
   root.endMs = at(end);
   root.children.push(makeSpan('model', 'glm-5', at(start + 1), at(start + 2), 'root'));
-  return { format: 'lci', id, title: `goal ${id}`, root, warnings: [] };
+  return { format: 'drip', id, title: `goal ${id}`, root, warnings: [] };
 }
 
-describe('isLciLaunch', () => {
-  test('matches lci as a command word, not as a substring', () => {
+describe('isDripLaunch', () => {
+  test('still matches lci, the predecessor name found in older transcripts', () => {
+    const span = makeSpan('tool', 'Bash', at(0), at(1), 'root', { toolName: 'Bash', payload: { input: 'lci --json "goal"' } });
+    expect(isDripLaunch(span)).toBe(true);
+  });
+
+  test('matches drip as a command word, not as a substring', () => {
     const { launch, other } = tree();
-    expect(isLciLaunch(launch)).toBe(true);
-    expect(isLciLaunch(other)).toBe(false);
-    const sub = makeSpan('tool', 'Bash', 0, 1, null, { toolInput: '{"command":"cat calcify.ts"}' });
-    expect(isLciLaunch(sub)).toBe(false);
-    const piped = makeSpan('tool', 'Bash', 0, 1, null, { toolInput: '{"command":"cd x && lci --resume abc"}' });
-    expect(isLciLaunch(piped)).toBe(true);
+    expect(isDripLaunch(launch)).toBe(true);
+    expect(isDripLaunch(other)).toBe(false);
+    const sub = makeSpan('tool', 'Bash', 0, 1, null, { toolInput: '{"command":"cat cadripfy.ts"}' });
+    expect(isDripLaunch(sub)).toBe(false);
+    const piped = makeSpan('tool', 'Bash', 0, 1, null, { toolInput: '{"command":"cd x && drip --resume abc"}' });
+    expect(isDripLaunch(piped)).toBe(true);
   });
 });
 
 describe('findLaunchSpan', () => {
-  test('prefers the lci Bash call whose window contains the child start', () => {
+  test('prefers the drip Bash call whose window contains the child start', () => {
     const { root, launch } = tree();
     expect(findLaunchSpan(root, at(12))).toBe(launch);
     // a child that started a hair before the tool record still counts
@@ -61,7 +66,7 @@ describe('findLaunchSpan', () => {
 
   test('with two launches, the latest one that started before the child wins', () => {
     const { root, turn1 } = tree();
-    const later = makeSpan('tool', 'Bash', at(20), at(300), null, { toolInput: '{"command":"lci --review"}' });
+    const later = makeSpan('tool', 'Bash', at(20), at(300), null, { toolInput: '{"command":"drip --review"}' });
     turn1.children.push(later);
     expect(findLaunchSpan(root, at(25))).toBe(later);
     expect(findLaunchSpan(root, at(15))).not.toBe(later);
@@ -83,12 +88,12 @@ describe('graftSession', () => {
     const c = child('abc', 11, 390);
     const grafted = graftSession(root, launch, c, { id: 'abc', path: 'p/transcript.jsonl', title: 'build it' });
     expect(launch.children).toContain(grafted);
-    expect(grafted.id).toBe('lci:abc');
+    expect(grafted.id).toBe('drip:abc');
     expect(grafted.parentId).toBe(launch.id);
     expect(grafted.kind).toBe('session');
-    expect(grafted.name).toBe('lci · build it');
-    expect(grafted.meta?.harness).toBe('lci');
-    expect(launch.meta?.spawned).toBe('lci');
+    expect(grafted.name).toBe('drip · build it');
+    expect(grafted.meta?.harness).toBe('drip');
+    expect(launch.meta?.spawned).toBe('drip');
     expect(flatten(root).some((s) => s.kind === 'model' && s.name === 'glm-5')).toBe(true);
     expect(graftedIds(root)).toEqual(new Set(['abc']));
   });
@@ -99,6 +104,6 @@ describe('graftSession', () => {
     graftSession(root, turn2, c, { id: 'late', path: 'p', title: '' });
     expect(root.endMs).toBe(at(900));
     expect(turn2.endMs).toBe(at(410));
-    expect(c.root.name).toBe('lci · goal late');
+    expect(c.root.name).toBe('drip · goal late');
   });
 });

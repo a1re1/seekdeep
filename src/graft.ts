@@ -1,9 +1,9 @@
-// Grafting a child harness session (an lci run) into the span tree of the
+// Grafting a child harness session (an drip run) into the span tree of the
 // host session (Claude Code, OpenCode or pi) that launched it, so one
 // waterfall shows the whole multi-harness journey. Pure: no I/O, no DOM.
 //
 // Host selection, in order:
-//   1. the shell tool span whose command mentions `lci` and whose window
+//   1. the shell tool span whose command mentions `drip` and whose window
 //      (± LAUNCH_SLACK_MS) contains the child's start — the latest such
 //      launch that started before the child wins;
 //   2. the turn active when the child started (the last turn that began
@@ -19,7 +19,7 @@ import { harnessOf } from './stats.ts';
 export const LAUNCH_SLACK_MS = 5_000;
 
 /**
- * Transcript formats whose sessions can launch lci and so host grafted
+ * Transcript formats whose sessions can launch drip and so host grafted
  * children: the same rule as the index's `isHostKind`, applied to the
  * format's harness label (formats the index cannot connect never host).
  */
@@ -34,20 +34,22 @@ export interface ChildRef {
   title: string;
 }
 
-const LCI_RE = /(^|[\s;&|(`'"])lci(\s|$)/;
+// `lci` is drip's TypeScript predecessor (same session format); transcripts
+// recorded before the rename still launch it by that name.
+const DRIP_RE = /(^|[\s;&|(`'"])(?:drip|lci)(\s|$)/;
 
-/** Whether a tool span looks like a shell call that launched lci. */
-export function isLciLaunch(span: Span): boolean {
+/** Whether a tool span looks like a shell call that launched drip. */
+export function isDripLaunch(span: Span): boolean {
   if (span.kind !== 'tool') return false;
   const text = span.payload?.input ?? span.toolInput ?? '';
-  return LCI_RE.test(text);
+  return DRIP_RE.test(text);
 }
 
-/** The span an lci session starting at `startMs` should nest under. */
+/** The span an drip session starting at `startMs` should nest under. */
 export function findLaunchSpan(root: Span, startMs: number): Span {
   let best: Span | null = null;
   for (const span of flatten(root)) {
-    if (!isLciLaunch(span)) continue;
+    if (!isDripLaunch(span)) continue;
     if (startMs < span.startMs - LAUNCH_SLACK_MS || startMs > span.endMs + LAUNCH_SLACK_MS) continue;
     if (best === null || betterLaunch(span, best, startMs)) best = span;
   }
@@ -74,19 +76,19 @@ function betterLaunch(a: Span, b: Span, childStart: number): boolean {
  */
 export function graftSession(root: Span, host: Span, child: Session, ref: ChildRef): Span {
   const grafted = child.root;
-  grafted.id = `lci:${ref.id}`;
+  grafted.id = `drip:${ref.id}`;
   grafted.parentId = host.id;
-  grafted.name = `lci · ${ref.title.length > 0 ? ref.title : child.title}`;
+  grafted.name = `drip · ${ref.title.length > 0 ? ref.title : child.title}`;
   grafted.meta = {
     ...grafted.meta,
-    harness: 'lci',
-    lciSessionId: ref.id,
-    lciPath: ref.path,
+    harness: 'drip',
+    dripSessionId: ref.id,
+    dripPath: ref.path,
     launchedBy: host.name,
   };
   host.children.push(grafted);
   host.children.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
-  if (host.kind === 'tool') host.meta = { ...host.meta, spawned: 'lci' };
+  if (host.kind === 'tool') host.meta = { ...host.meta, spawned: 'drip' };
   if (grafted.endMs > root.endMs) root.endMs = grafted.endMs;
   if (grafted.startMs < root.startMs) root.startMs = grafted.startMs;
   return grafted;
@@ -101,7 +103,7 @@ export function isEmptySession(child: Session): boolean {
 export function graftedIds(root: Span): Set<string> {
   const out = new Set<string>();
   for (const span of flatten(root)) {
-    const id = span.meta?.lciSessionId;
+    const id = span.meta?.dripSessionId;
     if (typeof id === 'string') out.add(id);
   }
   return out;

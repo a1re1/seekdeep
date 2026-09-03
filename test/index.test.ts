@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { SourceFile, SourceKind } from '../src/index/fs.ts';
-import { scanClaude, scanLci, scanPi, type SessionEntry } from '../src/index/scan.ts';
+import { scanClaude, scanDrip, scanPi, type SessionEntry } from '../src/index/scan.ts';
 import { buildIndex, parseScratchpadCwd, splitWorktree } from '../src/index/link.ts';
 
 const ms = (iso: string) => Date.parse(iso);
@@ -89,7 +89,7 @@ describe('scanClaude', () => {
   });
 });
 
-describe('scanLci', () => {
+describe('scanDrip', () => {
   test('prefers session.json/result.json metadata when both are present', async () => {
     const dir = 'projects/-Users-x-src-app/sessions/22222222-2222-4222-8222-222222222222/';
     const transcript = mem(`${dir}transcript.jsonl`, lines(
@@ -101,10 +101,10 @@ describe('scanLci', () => {
       mem(`${dir}result.json`, JSON.stringify({ endedAt: '2026-08-30T12:30:00.000Z', goal: 'ship the index', reason: 'done' })),
       transcript,
     ];
-    const sessions = await scanLci(files);
+    const sessions = await scanDrip(files);
     expect(sessions).toHaveLength(1);
     const s = sessions[0]!;
-    expect(s.kind).toBe('lci');
+    expect(s.kind).toBe('drip');
     expect(s.id).toBe('22222222-2222-4222-8222-222222222222');
     expect(s.slug).toBe('-Users-x-src-app');
     expect(s.cwd).toBe('/Users/x/src/app/.worktrees/idx');
@@ -122,7 +122,7 @@ describe('scanLci', () => {
         { at: '2026-08-30T13:15:00.000Z' },
       )),
     ];
-    const sessions = await scanLci(files);
+    const sessions = await scanDrip(files);
     expect(sessions).toHaveLength(1);
     const s = sessions[0]!;
     expect(s.id).toBe('sess-3');
@@ -143,7 +143,7 @@ describe('scanLci', () => {
       // Nested too deep to be a session transcript.
       mem('projects/-l-lost/sessions/sess-2/nested/transcript.jsonl', lines({ at: '2026-08-30T15:00:00.000Z' })),
     ];
-    const sessions = await scanLci(files);
+    const sessions = await scanDrip(files);
     expect(sessions).toHaveLength(1);
     const s = sessions[0]!;
     expect(s.id).toBe('sess-2');
@@ -157,7 +157,7 @@ describe('scanLci', () => {
     const files = [
       mem('projects/-l-proj/sessions/broken/transcript.jsonl', lines({ hello: 'world' }, { text: 'no at field' })),
     ];
-    expect(await scanLci(files)).toHaveLength(0);
+    expect(await scanDrip(files)).toHaveLength(0);
   });
 });
 
@@ -184,14 +184,14 @@ describe('splitWorktree', () => {
 });
 
 describe('buildIndex', () => {
-  test('nests an lci session under the Claude session named by its scratchpad cwd (rule 1)', async () => {
+  test('nests an drip session under the Claude session named by its scratchpad cwd (rule 1)', async () => {
     const parent = '11111111-1111-4111-8111-111111111111';
     const child = '22222222-2222-4222-8222-222222222222';
     const claude = await scanClaude([mem(`projects/-Users-x-src-app/${parent}.jsonl`, lines(
       { type: 'user', sessionId: parent, cwd: '/Users/x/src/app', gitBranch: 'main', timestamp: '2026-08-30T10:00:00.000Z', message: { content: 'spawn some subagents' } },
       { type: 'assistant', timestamp: '2026-08-30T10:30:00.000Z' },
     ))]);
-    const lci = await scanLci([
+    const drip = await scanDrip([
       mem(`projects/-Users-x-src-app/sessions/${child}/transcript.jsonl`, lines({ at: '2026-08-30T10:05:00.000Z', text: 'child goal' })),
       mem(`projects/-Users-x-src-app/sessions/${child}/session.json`, JSON.stringify({
         createdAt: '2026-08-30T10:01:00.000Z',
@@ -199,7 +199,7 @@ describe('buildIndex', () => {
         id: child,
       })),
     ]);
-    const index = buildIndex([...claude, ...lci]);
+    const index = buildIndex([...claude, ...drip]);
     expect(index).toHaveLength(1);
     const project = index[0]!;
     expect(project.root).toBe('/Users/x/src/app');
@@ -216,33 +216,33 @@ describe('buildIndex', () => {
     const a = ent('claude', 'claude-a', '/w/app', t('11:04:10'), t('11:40:00'));
     const b = ent('claude', 'claude-b', '/w/app', t('11:04:30'), t('11:55:00'));
     const other = ent('claude', 'claude-c', '/w/other', t('11:05:00'), t('11:30:00'));
-    const lci = ent('lci', 'lci-1', '/w/app', t('11:05:00'), t('11:06:00'));
-    const project = buildIndex([a, b, other, lci]).find((p) => p.root === '/w/app')!;
+    const drip = ent('drip', 'drip-1', '/w/app', t('11:05:00'), t('11:06:00'));
+    const project = buildIndex([a, b, other, drip]).find((p) => p.root === '/w/app')!;
     const tops = project.worktrees[0]!.sessions;
     // Newest first; the child sits under the latest matching parent only.
     expect(tops.map((n) => n.entry.id)).toEqual(['claude-b', 'claude-a']);
-    expect(tops[0]!.children.map((c) => c.entry.id)).toEqual(['lci-1']);
+    expect(tops[0]!.children.map((c) => c.entry.id)).toEqual(['drip-1']);
     expect(tops[1]!.children).toHaveLength(0);
   });
 
-  test('rule 2 accepts a long-running parent that started hours before the lci run', () => {
+  test('rule 2 accepts a long-running parent that started hours before the drip run', () => {
     const t = (hhmmss: string) => ms(`2026-08-30T${hhmmss}Z`);
     const early = ent('claude', 'claude-early', '/w/app', t('08:00:00'), t('12:30:00'));
     const ended = ent('claude', 'claude-ended', '/w/app', t('09:00:00'), t('10:00:00')); // ended > 10 min before
     const later = ent('claude', 'claude-later', '/w/app', t('11:30:00'), t('12:00:00')); // starts > 60 s after
-    const lci = ent('lci', 'lci-1', '/w/app', t('11:05:00'), t('11:20:00'));
-    const project = buildIndex([early, ended, later, lci]).find((p) => p.root === '/w/app')!;
+    const drip = ent('drip', 'drip-1', '/w/app', t('11:05:00'), t('11:20:00'));
+    const project = buildIndex([early, ended, later, drip]).find((p) => p.root === '/w/app')!;
     const byId = new Map(project.worktrees[0]!.sessions.map((n) => [n.entry.id, n]));
-    expect(byId.get('claude-early')!.children.map((c) => c.entry.id)).toEqual(['lci-1']);
+    expect(byId.get('claude-early')!.children.map((c) => c.entry.id)).toEqual(['drip-1']);
     expect(byId.get('claude-ended')!.children).toHaveLength(0);
     expect(byId.get('claude-later')!.children).toHaveLength(0);
   });
 
-  test('an orphaned scratchpad lci session lands in the project its slug names', () => {
+  test('an orphaned scratchpad drip session lands in the project its slug names', () => {
     const claude = ent('claude', 'claude-x', '/w/app/.worktrees/x', 0, 1000, '-w-app--worktrees-x');
     const orphan = ent(
-      'lci',
-      'lci-orphan',
+      'drip',
+      'drip-orphan',
       '/private/tmp/claude-501/-w-app--worktrees-x/00000000-0000-0000-0000-000000000000/scratchpad/run',
       5000,
       6000,
@@ -251,33 +251,33 @@ describe('buildIndex', () => {
     expect(index.map((p) => p.root)).toEqual(['/w/app']);
     const group = index[0]!.worktrees[0]!;
     expect(group.label).toBe('x');
-    expect(group.sessions.map((n) => n.entry.id)).toEqual(['lci-orphan', 'claude-x']);
+    expect(group.sessions.map((n) => n.entry.id)).toEqual(['drip-orphan', 'claude-x']);
   });
 
   test('a cwd-less entry is placed by decoding its slug against known cwds (both dialects)', () => {
     const claude = ent('claude', 'claude-x', '/w/app/.worktrees/x', 0, 1000, '-w-app--worktrees-x');
-    const oldLci = ent('lci', 'lci-old', null, 2000, 3000, '-w-app-worktrees-x'); // lci drops the dot
+    const oldDrip = ent('drip', 'drip-old', null, 2000, 3000, '-w-app-worktrees-x'); // drip drops the dot
     const sibling = ent('claude', 'claude-nocwd', null, 4000, 5000, '-w-app--worktrees-x');
-    const index = buildIndex([claude, oldLci, sibling]);
+    const index = buildIndex([claude, oldDrip, sibling]);
     expect(index.map((p) => p.root)).toEqual(['/w/app']);
     expect(index[0]!.worktrees.map((g) => g.label)).toEqual(['x']);
-    expect(index[0]!.worktrees[0]!.sessions.map((n) => n.entry.id)).toEqual(['claude-nocwd', 'lci-old', 'claude-x']);
+    expect(index[0]!.worktrees[0]!.sessions.map((n) => n.entry.id)).toEqual(['claude-nocwd', 'drip-old', 'claude-x']);
   });
 
-  test('leaves lci sessions top-level when no parent matches (rule 3)', () => {
+  test('leaves drip sessions top-level when no parent matches (rule 3)', () => {
     const claude = ent('claude', 'claude-far', '/w/app', 0, 10_000);
-    const orphan = ent('lci', 'lci-orphan', '/else/where', 1000, 2000);
-    const lost = ent('lci', 'lci-lost', null, 1500, 2500, '-l-lost');
+    const orphan = ent('drip', 'drip-orphan', '/else/where', 1000, 2000);
+    const lost = ent('drip', 'drip-lost', null, 1500, 2500, '-l-lost');
     const index = buildIndex([claude, orphan, lost]);
     expect(index.map((p) => p.root).sort()).toEqual(['/else/where', '/w/app', 'slug:-l-lost']);
     const orphanProject = index.find((p) => p.root === '/else/where')!;
     expect(orphanProject.worktrees).toHaveLength(1);
     const node = orphanProject.worktrees[0]!.sessions[0]!;
-    expect(node.entry.id).toBe('lci-orphan');
+    expect(node.entry.id).toBe('drip-orphan');
     expect(node.children).toHaveLength(0);
-    // A cwd-less lci session groups by slug instead.
+    // A cwd-less drip session groups by slug instead.
     const lostProject = index.find((p) => p.root === 'slug:-l-lost')!;
-    expect(lostProject.worktrees[0]!.sessions[0]!.entry.id).toBe('lci-lost');
+    expect(lostProject.worktrees[0]!.sessions[0]!.entry.id).toBe('drip-lost');
   });
 
   test('groups /a/app and /a/app/.worktrees/x under one project with labels main and x', () => {
@@ -337,20 +337,20 @@ describe('scanPi', () => {
 describe('buildIndex with pi hosts', () => {
   const T = ms('2026-09-02T10:00:00Z');
 
-  test('an lci run in the same cwd during a pi session nests under it (rule 2)', () => {
+  test('an drip run in the same cwd during a pi session nests under it (rule 2)', () => {
     const pi = ent('pi', 'pi-1', '/Users/t/proj', T, T + 60_000);
-    const lci = ent('lci', 'lci-1', '/Users/t/proj', T + 10_000, T + 40_000);
-    const projects = buildIndex([pi, lci]);
+    const drip = ent('drip', 'drip-1', '/Users/t/proj', T + 10_000, T + 40_000);
+    const projects = buildIndex([pi, drip]);
     const roots = projects.flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
     expect(roots.map((n) => n.entry.id)).toEqual(['pi-1']);
-    expect(roots[0]!.children.map((n) => n.entry.id)).toEqual(['lci-1']);
+    expect(roots[0]!.children.map((n) => n.entry.id)).toEqual(['drip-1']);
   });
 
-  test('the latest host that started before the lci run wins across harnesses', () => {
+  test('the latest host that started before the drip run wins across harnesses', () => {
     const claude = ent('claude', 'c-1', '/Users/t/proj', T, T + 3_600_000);
     const pi = ent('pi', 'pi-1', '/Users/t/proj', T + 30_000, T + 120_000);
-    const lci = ent('lci', 'lci-1', '/Users/t/proj', T + 40_000, T + 50_000);
-    const roots = buildIndex([claude, pi, lci]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    const drip = ent('drip', 'drip-1', '/Users/t/proj', T + 40_000, T + 50_000);
+    const roots = buildIndex([claude, pi, drip]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
     const host = roots.find((n) => n.children.length > 0);
     expect(host?.entry.id).toBe('pi-1');
   });
@@ -358,11 +358,11 @@ describe('buildIndex with pi hosts', () => {
   test('the scratchpad rule only names Claude sessions', () => {
     const scratch = '/private/tmp/claude-501/-Users-t-proj/11111111-2222-3333-4444-555555555555/scratchpad';
     const pi = ent('pi', '11111111-2222-3333-4444-555555555555', '/Users/t/other', T, T + 1000);
-    const lci = ent('lci', 'lci-1', scratch, T + 3_600_000, T + 3_601_000);
-    const roots = buildIndex([pi, lci]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    const drip = ent('drip', 'drip-1', scratch, T + 3_600_000, T + 3_601_000);
+    const roots = buildIndex([pi, drip]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
     expect(roots.every((n) => n.children.length === 0)).toBe(true);
     const claude = ent('claude', '11111111-2222-3333-4444-555555555555', '/Users/t/other', T, T + 1000);
-    const nested = buildIndex([claude, lci]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
-    expect(nested.find((n) => n.entry.id === claude.id)?.children.map((n) => n.entry.id)).toEqual(['lci-1']);
+    const nested = buildIndex([claude, drip]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    expect(nested.find((n) => n.entry.id === claude.id)?.children.map((n) => n.entry.id)).toEqual(['drip-1']);
   });
 });

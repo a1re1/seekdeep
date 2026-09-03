@@ -21,7 +21,7 @@
 //   parts (else time.completed). A message without step-finish (an API
 //   error) is one model span with the message's tokens and ok=false.
 // - `tool` parts → `tool` spans (state.time.start/end, state.status); for
-//   `bash` the payload input is the raw command so lci launches are
+//   `bash` the payload input is the raw command so drip launches are
 //   detectable; other tools get their input as JSON.
 // - text parts → model output, reasoning parts → thinking.
 // Parsers NEVER throw: malformed lines are skipped and recorded as warnings.

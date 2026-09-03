@@ -62,7 +62,7 @@ export interface Span {
 }
 
 export interface Session {
-  format: 'claude-code' | 'lci' | 'codex' | 'opencode' | 'pi' | 'generic';
+  format: 'claude-code' | 'drip' | 'codex' | 'opencode' | 'pi' | 'generic';
   id: string;
   title: string;
   root: Span;
