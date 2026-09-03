@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { SourceFile, SourceKind } from '../src/index/fs.ts';
-import { scanClaude, scanLci, type SessionEntry } from '../src/index/scan.ts';
+import { scanClaude, scanLci, scanPi, type SessionEntry } from '../src/index/scan.ts';
 import { buildIndex, parseScratchpadCwd, splitWorktree } from '../src/index/link.ts';
 
 const ms = (iso: string) => Date.parse(iso);
@@ -291,5 +291,78 @@ describe('buildIndex', () => {
     expect(project.latestMs).toBe(4000);
     expect(project.worktrees.map((g) => g.label)).toEqual(['main', 'x']);
     expect(project.worktrees.map((g) => g.cwd)).toEqual(['/a/app', '/a/app/.worktrees/x']);
+  });
+});
+
+// ---- pi ------------------------------------------------------------------
+
+describe('scanPi', () => {
+  const piFixture = async () => await Bun.file(new URL('./fixtures/pi.jsonl', import.meta.url)).text();
+
+  test('reads id/cwd/start from the session header and the title from the first prompt', async () => {
+    const text = await piFixture();
+    const path = 'sessions/--Users-tylerwhitehurst-src-seekdeep-.worktrees-72286388--/2026-09-02T11-22-50-782Z_01a061db-821d-75d1-9c81-12645c109194.jsonl';
+    const [e] = await scanPi([mem(path, text), mem('sessions/x/nested/deeper.jsonl', text), mem('README.md', 'x')]);
+    expect(e).toBeDefined();
+    expect(e!.kind).toBe('pi');
+    expect(e!.id).toBe('01a061db-821d-75d1-9c81-12645c109194');
+    expect(e!.cwd).toBe('/Users/tylerwhitehurst/src/seekdeep/.worktrees/72286388');
+    expect(e!.slug).toBe('--Users-tylerwhitehurst-src-seekdeep-.worktrees-72286388--');
+    expect(e!.title.startsWith('Run the shell command')).toBe(true);
+    expect(e!.startMs).toBe(ms('2026-09-02T11:22:50.782Z'));
+    expect(e!.endMs).toBeGreaterThan(e!.startMs);
+    expect(e!.branch).toBeNull();
+  });
+
+  test('only files directly inside a cwd directory under sessions/ are transcripts', async () => {
+    const text = await piFixture();
+    const entries = await scanPi([mem('sessions/--a--/one.jsonl', text), mem('sessions/loose.jsonl', text), mem('other/--a--/two.jsonl', text)]);
+    expect(entries.map((e) => e.path)).toEqual(['sessions/--a--/one.jsonl']);
+  });
+
+  test('falls back to the file name id and first timestamps when the header is missing', async () => {
+    const text = lines(
+      { type: 'message', id: 'a', parentId: null, timestamp: '2026-09-02T10:00:00Z', message: { role: 'user', content: 'hi', timestamp: 1 } },
+      { type: 'message', id: 'b', parentId: 'a', timestamp: '2026-09-02T10:00:05Z', message: { role: 'assistant', content: [], timestamp: 2 } },
+    );
+    const [e] = await scanPi([mem('sessions/--x--/2026-09-02T10-00-00-000Z_abc-123.jsonl', text)]);
+    expect(e!.id).toBe('abc-123');
+    expect(e!.cwd).toBeNull();
+    expect(e!.title).toBe('hi');
+    expect(e!.startMs).toBe(ms('2026-09-02T10:00:00Z'));
+    expect(e!.endMs).toBe(ms('2026-09-02T10:00:05Z'));
+  });
+});
+
+describe('buildIndex with pi hosts', () => {
+  const T = ms('2026-09-02T10:00:00Z');
+
+  test('an lci run in the same cwd during a pi session nests under it (rule 2)', () => {
+    const pi = ent('pi', 'pi-1', '/Users/t/proj', T, T + 60_000);
+    const lci = ent('lci', 'lci-1', '/Users/t/proj', T + 10_000, T + 40_000);
+    const projects = buildIndex([pi, lci]);
+    const roots = projects.flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    expect(roots.map((n) => n.entry.id)).toEqual(['pi-1']);
+    expect(roots[0]!.children.map((n) => n.entry.id)).toEqual(['lci-1']);
+  });
+
+  test('the latest host that started before the lci run wins across harnesses', () => {
+    const claude = ent('claude', 'c-1', '/Users/t/proj', T, T + 3_600_000);
+    const pi = ent('pi', 'pi-1', '/Users/t/proj', T + 30_000, T + 120_000);
+    const lci = ent('lci', 'lci-1', '/Users/t/proj', T + 40_000, T + 50_000);
+    const roots = buildIndex([claude, pi, lci]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    const host = roots.find((n) => n.children.length > 0);
+    expect(host?.entry.id).toBe('pi-1');
+  });
+
+  test('the scratchpad rule only names Claude sessions', () => {
+    const scratch = '/private/tmp/claude-501/-Users-t-proj/11111111-2222-3333-4444-555555555555/scratchpad';
+    const pi = ent('pi', '11111111-2222-3333-4444-555555555555', '/Users/t/other', T, T + 1000);
+    const lci = ent('lci', 'lci-1', scratch, T + 3_600_000, T + 3_601_000);
+    const roots = buildIndex([pi, lci]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    expect(roots.every((n) => n.children.length === 0)).toBe(true);
+    const claude = ent('claude', '11111111-2222-3333-4444-555555555555', '/Users/t/other', T, T + 1000);
+    const nested = buildIndex([claude, lci]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    expect(nested.find((n) => n.entry.id === claude.id)?.children.map((n) => n.entry.id)).toEqual(['lci-1']);
   });
 });

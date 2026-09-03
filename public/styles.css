@@ -209,6 +209,8 @@ label.vt-btn input[type="file"] { display: none; }
 .vt-tag { text-transform: none; white-space: nowrap; }
 .tag-claude, .tag-tool { --vt-tag-bg: var(--accent-soft); --vt-tag-fg: var(--accent); }
 .tag-lci, .tag-session { --vt-tag-bg: color-mix(in oklch, var(--indigo) 16%, transparent); --vt-tag-fg: var(--indigo); }
+.tag-opencode { --vt-tag-bg: color-mix(in oklch, var(--teal) 18%, transparent); --vt-tag-fg: color-mix(in oklch, var(--teal) 75%, var(--text-primary)); }
+.tag-pi { --vt-tag-bg: color-mix(in oklch, var(--purple) 16%, transparent); --vt-tag-fg: var(--purple); }
 .tag-model { --vt-tag-bg: color-mix(in oklch, var(--green) 16%, transparent); --vt-tag-fg: color-mix(in oklch, var(--green) 80%, var(--text-primary)); }
 .tag-turn { --vt-tag-bg: color-mix(in oklch, var(--teal) 18%, transparent); --vt-tag-fg: color-mix(in oklch, var(--teal) 75%, var(--text-primary)); }
 .tag-subagent { --vt-tag-bg: color-mix(in oklch, var(--purple) 16%, transparent); --vt-tag-fg: var(--purple); }

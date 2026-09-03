@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { detectFormat, parseTranscript } from '../src/parsers/index.ts';
 import { flatten, sumUsage, type Span } from '../src/model.ts';
 import { capText } from '../src/parsers/util.ts';
+import { flattenOpencodeExport } from '../src/parsers/opencode.ts';
+import { isLciLaunch } from '../src/graft.ts';
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/${name}.jsonl`, import.meta.url)).text();
 const ms = (iso: string) => Date.parse(iso);
@@ -13,6 +15,8 @@ describe('detectFormat', () => {
     ['lci', 'lci'],
     ['lci-legacy', 'lci'],
     ['codex', 'codex'],
+    ['opencode', 'opencode'],
+    ['pi', 'pi'],
     ['garbage', 'generic'],
   ] as const) {
     test(`${name} → ${format}`, async () => {
@@ -204,6 +208,184 @@ describe('codex parser', () => {
   });
 });
 
+describe('pi parser', () => {
+  test('real session: header id/cwd, one turn, model spans with 1:1 usage', async () => {
+    const s = parseTranscript(await fixture('pi'), 'pi.jsonl');
+    expect(s.format).toBe('pi');
+    expect(s.id).toBe('01a061db-821d-75d1-9c81-12645c109194');
+    expect(s.root.meta?.cwd).toBe('/Users/tylerwhitehurst/src/seekdeep/.worktrees/72286388');
+    expect(s.root.startMs).toBe(Date.parse('2026-09-02T11:22:50.782Z'));
+    const turns = s.root.children.filter((c) => c.kind === 'turn');
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.name.startsWith('Run the shell command')).toBe(true);
+    const models = flatten(s.root).filter((sp) => sp.kind === 'model');
+    expect(models).toHaveLength(2);
+    expect(models[0]!.model).toBe('gpt-5.4');
+    expect(models[0]!.provider).toBe('openai');
+    expect(models[0]!.usage).toEqual({ input: 1043, cacheRead: 0, cacheWrite: 0, output: 85 });
+    expect(models[0]!.payload?.thinking?.length ?? 0).toBeGreaterThan(0);
+    expect(models[0]!.payload?.newContext?.[0]?.role).toBe('user');
+    // The model span starts at the prompt entry and ends at the assistant entry.
+    expect(models[0]!.startMs).toBe(Date.parse('2026-09-02T11:22:50.790Z'));
+    expect(models[0]!.endMs).toBe(Date.parse('2026-09-02T11:22:53.370Z'));
+    expect(models[1]!.payload?.newContext?.some((c) => c.role === 'tool_result' && c.ok === true)).toBe(true);
+    expect(models[1]!.payload?.stopReason).toBe('stop');
+  });
+
+  test('bash tool calls pair with their toolResult and expose the raw command', async () => {
+    const s = parseTranscript(await fixture('pi'), 'pi.jsonl');
+    const tools = flatten(s.root).filter((sp) => sp.kind === 'tool');
+    expect(tools).toHaveLength(1);
+    const bash = tools[0]!;
+    expect(bash.toolName).toBe('bash');
+    expect(bash.ok).toBe(true);
+    expect(bash.payload?.input).toBe('lci --version');
+    expect(bash.payload?.output).toBe('lci 0.97.0\n');
+    expect(bash.endMs).toBe(Date.parse('2026-09-02T11:22:53.459Z'));
+    expect(isLciLaunch(bash)).toBe(true);
+  });
+
+  test('model_change sets the model for messages without one; unmatched calls warn', () => {
+    const t = '2026-09-02T10:00:0';
+    const text = [
+      { type: 'session', version: 3, id: 's1', timestamp: `${t}0.000Z`, cwd: '/p' },
+      { type: 'model_change', id: 'a', parentId: null, timestamp: `${t}0.001Z`, provider: 'anthropic', modelId: 'claude-opus-5' },
+      { type: 'message', id: 'b', parentId: 'a', timestamp: `${t}1.000Z`, message: { role: 'user', content: 'go', timestamp: 1 } },
+      {
+        type: 'message',
+        id: 'c',
+        parentId: 'b',
+        timestamp: `${t}3.000Z`,
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call1', name: 'read', arguments: { path: 'x' } }], usage: { input: 5, output: 2, cacheRead: 1, cacheWrite: 3, cacheWrite1h: 3, reasoning: 1 }, stopReason: 'toolUse', timestamp: 3 },
+      },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join('\n');
+    const s = parseTranscript(text, 'x.jsonl');
+    expect(s.format).toBe('pi');
+    const model = flatten(s.root).find((sp) => sp.kind === 'model')!;
+    expect(model.model).toBe('claude-opus-5');
+    expect(model.provider).toBe('anthropic');
+    expect(model.usage).toEqual({ input: 5, cacheRead: 1, cacheWrite: 3, cacheWrite1h: 3, output: 2, reasoning: 1 });
+    const tool = flatten(s.root).find((sp) => sp.kind === 'tool')!;
+    expect(tool.payload?.input).toContain('"path": "x"');
+    expect(tool.ok).toBeUndefined();
+    expect(s.warnings.some((w) => w.includes('no result'))).toBe(true);
+  });
+});
+
+describe('opencode parser', () => {
+  test('real session: title/cwd, turns per prompt, one model span per step-finish', async () => {
+    const s = parseTranscript(await fixture('opencode'), 'opencode.jsonl');
+    expect(s.format).toBe('opencode');
+    expect(s.id).toBe('ses_f9e2c8994ffeGN1Ii7hj7D2065');
+    expect(s.title).toBe('Repo contents overview');
+    expect(s.root.meta?.cwd).toBe('/Users/tylerwhitehurst/src/seekdeep/.worktrees/c97a002e');
+    expect(s.root.startMs).toBe(1788347643500);
+    const turns = s.root.children.filter((c) => c.kind === 'turn');
+    expect(turns.map((t) => t.name)).toEqual(['whats in this repo?', 'whats in this repo?', 'nice. how does it work?']);
+    expect(s.root.children.filter((c) => c.kind === 'idle')).toHaveLength(2);
+    const models = flatten(s.root).filter((sp) => sp.kind === 'model');
+    // The first assistant message (a quota error with no parts and zero
+    // tokens — `opencode export` drops the error object) draws nothing;
+    // then 3 steps + 4 steps.
+    expect(models).toHaveLength(7);
+    const first = models[0]!;
+    expect(first.model).toBe('muse-spark-1.2-contributor-free');
+    expect(first.provider).toBe('opencode');
+    expect(first.usage).toEqual({ input: 8435, cacheRead: 241, cacheWrite: 0, output: 82, reasoning: 11 });
+    expect(first.startMs).toBe(1788347699048); // message time.created
+    expect(first.endMs).toBe(1788347700508); // latest part time.end in the step (the read tool)
+    expect(first.payload?.stopReason).toBe('tool-calls');
+    expect(first.payload?.output).toBe("Checking what's in this repo.");
+    expect(models[1]!.payload?.newContext?.[0]?.role).toBe('tool_result');
+  });
+
+  test('an assistant message with an API error and no parts is a failed model span', () => {
+    const t0 = 1_800_000_000_000;
+    const recs = [
+      { type: 'opencode.session', data: { id: 'ses_a', directory: '/p', title: 'Err', version: '1.18.26', time: { created: t0, updated: t0 + 5000 } } },
+      { type: 'opencode.message', data: { id: 'm1', sessionID: 'ses_a', role: 'user', time: { created: t0 } } },
+      { type: 'opencode.part', data: { id: 'p1', sessionID: 'ses_a', messageID: 'm1', type: 'text', text: 'hi' } },
+      { type: 'opencode.message', data: { id: 'm2', sessionID: 'ses_a', role: 'assistant', modelID: 'gpt-5.3-chat-latest', providerID: 'openai', time: { created: t0 + 10, completed: t0 + 3000 }, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, error: { name: 'APIError', data: { message: 'Quota exceeded.' } } } },
+    ];
+    const s = parseTranscript(recs.map((r) => JSON.stringify(r)).join('\n'), 'oc.jsonl');
+    const model = flatten(s.root).find((sp) => sp.kind === 'model')!;
+    expect(model.ok).toBe(false);
+    expect(model.payload?.stopReason).toBe('error');
+    expect(model.startMs).toBe(t0 + 10);
+    expect(model.endMs).toBe(t0 + 3000);
+    expect(model.detail).toBe('Quota exceeded.');
+    expect(s.warnings.some((w) => w.startsWith('model call failed'))).toBe(true);
+  });
+
+  test('tool parts become tool spans timed by state.time with ok from status', async () => {
+    const s = parseTranscript(await fixture('opencode'), 'opencode.jsonl');
+    const tools = flatten(s.root).filter((sp) => sp.kind === 'tool');
+    expect(tools).toHaveLength(12);
+    expect(tools.every((t) => t.toolName === 'read' && t.ok === true)).toBe(true);
+    expect(tools[0]!.startMs).toBe(1788347700504);
+    expect(tools[0]!.endMs).toBe(1788347700508);
+    expect(tools[0]!.payload?.input).toContain('"filePath"');
+    expect(tools[0]!.payload?.output?.startsWith('<path>')).toBe(true);
+  });
+
+  test('bash tool input is the raw command; child sessions nest as subagents', () => {
+    const t0 = 1_800_000_000_000;
+    const recs = [
+      { type: 'opencode.session', data: { id: 'ses_a', directory: '/p', title: 'Root', version: '1.18.26', time: { created: t0, updated: t0 + 20_000 } } },
+      { type: 'opencode.session', data: { id: 'ses_b', parentID: 'ses_a', directory: '/p', title: 'explore', version: '1.18.26', time: { created: t0 + 3000, updated: t0 + 6000 } } },
+      { type: 'opencode.message', data: { id: 'm1', sessionID: 'ses_a', role: 'user', time: { created: t0 } } },
+      { type: 'opencode.part', data: { id: 'p1', sessionID: 'ses_a', messageID: 'm1', type: 'text', text: 'run lci' } },
+      { type: 'opencode.message', data: { id: 'm2', sessionID: 'ses_a', role: 'assistant', modelID: 'gpt-5.4', providerID: 'openai', time: { created: t0 + 1000, completed: t0 + 10_000 } } },
+      { type: 'opencode.part', data: { id: 'p2', sessionID: 'ses_a', messageID: 'm2', type: 'step-start' } },
+      { type: 'opencode.part', data: { id: 'p3', sessionID: 'ses_a', messageID: 'm2', type: 'tool', tool: 'bash', callID: 'c1', state: { status: 'completed', input: { command: 'lci --json "do it"' }, output: 'ok', time: { start: t0 + 2000, end: t0 + 9000 } } } },
+      { type: 'opencode.part', data: { id: 'p4', sessionID: 'ses_a', messageID: 'm2', type: 'step-finish', reason: 'tool-calls', tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 2, write: 1 } } } },
+      { type: 'opencode.message', data: { id: 'm3', sessionID: 'ses_b', role: 'user', time: { created: t0 + 3000 } } },
+      { type: 'opencode.part', data: { id: 'p5', sessionID: 'ses_b', messageID: 'm3', type: 'text', text: 'look around' } },
+      { type: 'opencode.message', data: { id: 'm4', sessionID: 'ses_b', role: 'assistant', modelID: 'gpt-5.4', providerID: 'openai', time: { created: t0 + 3500, completed: t0 + 5000 } } },
+      { type: 'opencode.part', data: { id: 'p6', sessionID: 'ses_b', messageID: 'm4', type: 'text', text: 'done', time: { start: t0 + 4000, end: t0 + 5000 } } },
+      { type: 'opencode.part', data: { id: 'p7', sessionID: 'ses_b', messageID: 'm4', type: 'step-finish', reason: 'stop', tokens: { input: 3, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    ];
+    const s = parseTranscript(recs.map((r) => JSON.stringify(r)).join('\n'), 'oc.jsonl');
+    expect(s.format).toBe('opencode');
+    const bash = flatten(s.root).find((sp) => sp.kind === 'tool')!;
+    expect(bash.payload?.input).toBe('lci --json "do it"');
+    expect(isLciLaunch(bash)).toBe(true);
+    expect(bash.startMs).toBe(t0 + 2000);
+    expect(bash.endMs).toBe(t0 + 9000);
+    const model = flatten(s.root).find((sp) => sp.kind === 'model')!;
+    expect(model.usage).toEqual({ input: 10, cacheRead: 2, cacheWrite: 1, output: 5, reasoning: 0 });
+    expect(model.endMs).toBe(t0 + 9000); // step ends with its last tool
+    const sub = flatten(s.root).find((sp) => sp.kind === 'subagent')!;
+    expect(sub.name).toBe('subagent · explore');
+    expect(sub.parentId).toBe(s.root.children.find((c) => c.kind === 'turn')!.id);
+    expect(sub.children.map((c) => c.kind)).toEqual(['model']);
+    expect(sub.children[0]!.usage?.input).toBe(3);
+  });
+
+  test('an `opencode export` JSON document flattens to the same spans', async () => {
+    const flat = await fixture('opencode');
+    const info: Record<string, unknown> = {};
+    const messages: { info: Record<string, unknown>; parts: Record<string, unknown>[] }[] = [];
+    for (const line of flat.split('\n')) {
+      if (line.trim().length === 0) continue;
+      const rec = JSON.parse(line) as { type: string; data: Record<string, unknown> };
+      if (rec.type === 'opencode.session') Object.assign(info, rec.data);
+      else if (rec.type === 'opencode.message') messages.push({ info: rec.data, parts: [] });
+      else messages[messages.length - 1]!.parts.push(rec.data);
+    }
+    const exported = JSON.stringify({ info, messages }, null, 2);
+    expect(flattenOpencodeExport('[1,2]')).toBeNull();
+    expect(flattenOpencodeExport('{"info":1}')).toBeNull();
+    expect(flattenOpencodeExport(exported)).not.toBeNull();
+    const a = parseTranscript(exported, 'export.json');
+    const b = parseTranscript(flat, 'opencode.jsonl');
+    expect(a.format).toBe('opencode');
+    expect(flatten(a.root).map((sp) => [sp.kind, sp.startMs, sp.endMs])).toEqual(flatten(b.root).map((sp) => [sp.kind, sp.startMs, sp.endMs]));
+  });
+});
+
 describe('generic parser', () => {
   test('never throws on garbage and still finds timestamped/usage records', async () => {
     const s = parseTranscript(await fixture('garbage'), 'garbage.jsonl');
@@ -228,7 +410,7 @@ describe('generic parser', () => {
 });
 
 describe('invariants', () => {
-  for (const name of ['claude-code', 'lci', 'lci-legacy', 'codex', 'garbage']) {
+  for (const name of ['claude-code', 'lci', 'lci-legacy', 'codex', 'opencode', 'pi', 'garbage']) {
     test(`${name}: endMs >= startMs and children within parents`, async () => {
       const s = parseTranscript(await fixture(name), `${name}.jsonl`);
       const check = (span: Span) => {

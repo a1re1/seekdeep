@@ -4,16 +4,16 @@
 
 import { clearActivityCache, collectBuckets } from './index/activity-cache.ts';
 import { clearScanCache, scanWithCache } from './index/cache.ts';
-import { forgetDirectory, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
+import { SOURCES, SOURCE_KINDS, forgetDirectory, isHostKind, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
 import type { SourceFile, SourceKind } from './index/fs.ts';
 import { buildIndex, splitWorktree } from './index/link.ts';
 import type { ProjectGroup, SessionNode } from './index/link.ts';
 import type { SessionEntry } from './index/scan.ts';
 import { renderIndex } from './ui/index-view.ts';
-import type { IndexActions, IndexModel, IndexProgress } from './ui/index-view.ts';
+import type { IndexActions, IndexModel, IndexProgress, IndexSourceState } from './ui/index-view.ts';
 import type { Session, Span } from './model.ts';
 import { flatten } from './model.ts';
-import { findLaunchSpan, graftSession, graftedIds, isEmptySession } from './graft.ts';
+import { findLaunchSpan, graftSession, graftedIds, isEmptySession, isHostFormat } from './graft.ts';
 import { parseTranscript } from './parsers/index.ts';
 import { applyPricing, effectivePricing } from './pricing.ts';
 import { collectCacheBars, drawCacheTrace } from './ui/cache-trace.ts';
@@ -145,12 +145,10 @@ function main(): void {
   // ---- session index ------------------------------------------------------
   const indexPanel = byId<HTMLElement>('index-panel');
   const sourcesSummary = byId<HTMLElement>('sources-summary');
+  const emptySource = (): IndexSourceState => ({ connected: false, stored: false, sessions: 0 });
   const index = {
-    sources: {
-      claude: { connected: false, stored: false, sessions: 0 },
-      lci: { connected: false, stored: false, sessions: 0 },
-    },
-    entries: { claude: [] as SessionEntry[], lci: [] as SessionEntry[] },
+    sources: Object.fromEntries(SOURCE_KINDS.map((k) => [k, emptySource()])) as Record<SourceKind, IndexSourceState>,
+    entries: Object.fromEntries(SOURCE_KINDS.map((k) => [k, [] as SessionEntry[]])) as Record<SourceKind, SessionEntry[]>,
     projects: [] as ProjectGroup[],
     filter: '',
     progress: null as IndexProgress | null,
@@ -190,7 +188,7 @@ function main(): void {
 
   async function scanSource(kind: SourceKind, files: SourceFile[]): Promise<void> {
     index.busy = true;
-    const label = kind === 'claude' ? '~/.claude' : '~/.lci';
+    const label = SOURCES[kind].label;
     index.progress = { label: `scanning ${label}`, done: 0, total: files.length };
     renderIndexPanel();
     const entries = await scanWithCache(kind, files, (done, total) => {
@@ -227,7 +225,7 @@ function main(): void {
   /** Re-read every connected source (picks up transcripts written since the last scan). */
   async function rescanSources(): Promise<void> {
     if (index.busy) return; // a scan is already running; let it finish
-    const kinds = (['claude', 'lci'] as const).filter((k) => index.sources[k].connected);
+    const kinds = SOURCE_KINDS.filter((k) => index.sources[k].connected);
     if (kinds.length === 0) {
       setStatus('nothing connected yet — connect a source from the session picker');
       return;
@@ -262,23 +260,22 @@ function main(): void {
   }
 
   function rebuildIndex(): void {
-    index.projects = buildIndex([...index.entries.claude, ...index.entries.lci]);
+    index.projects = buildIndex(SOURCE_KINDS.flatMap((k) => index.entries[k]));
   }
 
   function renderIndexPanel(): void {
     const model: IndexModel = {
-      claude: index.sources.claude,
-      lci: index.sources.lci,
+      sources: index.sources,
       projects: index.projects,
       filter: index.filter,
       progress: index.progress,
       busy: index.busy,
     };
     renderIndex(indexPanel, model, indexActions);
-    sourcesSummary.textContent = (['claude', 'lci'] as const)
+    sourcesSummary.textContent = SOURCE_KINDS
       .map((k) => {
         const s = index.sources[k];
-        const label = k === 'claude' ? '~/.claude' : '~/.lci';
+        const label = SOURCES[k].label;
         return `${label} · ${s.connected ? `${s.sessions} session${s.sessions === 1 ? '' : 's'}` : s.stored ? 'reconnect needed' : 'not connected'}`;
       })
       .join('   ');
@@ -288,7 +285,7 @@ function main(): void {
   // ones that need a permission prompt show as "reconnect" (prompts require
   // a user gesture, so we cannot ask here).
   async function restoreSources(): Promise<void> {
-    for (const kind of ['claude', 'lci'] as const) {
+    for (const kind of SOURCE_KINDS) {
       const stored = await storedState(kind);
       if (stored === 'none') continue;
       const files = stored === 'granted' ? await restoreDirectory(kind) : null;
@@ -321,7 +318,7 @@ function main(): void {
     showPage('trace');
     renderTabs();
     render(true);
-    if (session.format === 'claude-code') void graftLciChildren(loaded, entry);
+    if (isHostFormat(session.format)) void graftLciChildren(loaded, entry);
   }
 
   function reindexParents(loaded: Loaded): void {
@@ -330,12 +327,12 @@ function main(): void {
   }
 
   // ---- lci children -------------------------------------------------------
-  /** The index node for a loaded Claude session, if the index knows it. */
+  /** The index node for a loaded host session, if the index knows it. */
   function indexNodeFor(session: Session, entry?: SessionEntry): SessionNode | null {
     for (const project of index.projects) {
       for (const group of project.worktrees) {
         for (const node of group.sessions) {
-          if (node.entry.kind !== 'claude') continue;
+          if (!isHostKind(node.entry.kind)) continue;
           if (entry !== undefined ? node.entry.path === entry.path : node.entry.id === session.id) return node;
         }
       }
@@ -344,13 +341,14 @@ function main(): void {
   }
 
   /**
-   * Read every lci session the index nests under this Claude session and
-   * graft it under the Bash call that launched it (or the active turn), so
-   * the waterfall shows the whole multi-harness journey. Runs after the
-   * first paint; the trace refreshes in place when it is done.
+   * Read every lci session the index nests under this host session (Claude
+   * Code, OpenCode or pi) and graft it under the shell call that launched it
+   * (or the active turn), so the waterfall shows the whole multi-harness
+   * journey. Runs after the first paint; the trace refreshes in place when
+   * it is done.
    */
   async function graftLciChildren(loaded: Loaded, entry?: SessionEntry): Promise<void> {
-    if (loaded.session.format !== 'claude-code' || loaded.grafting) return;
+    if (!isHostFormat(loaded.session.format) || loaded.grafting) return;
     const node = indexNodeFor(loaded.session, entry);
     if (node === null) return;
     const have = graftedIds(loaded.session.root);

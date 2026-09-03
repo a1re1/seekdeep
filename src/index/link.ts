@@ -1,7 +1,9 @@
 // Pure grouping/nesting of scanned SessionEntries into the session index
 // tree: projects → worktree groups → sessions, with lci sessions nested
-// under the Claude Code session that spawned them. No I/O; fully testable.
+// under the host session (Claude Code, OpenCode or pi) that spawned them.
+// No I/O; fully testable.
 
+import { isHostKind } from './fs.ts';
 import type { SessionEntry } from './scan.ts';
 
 // ---- shapes ---------------------------------------------------------------
@@ -56,23 +58,25 @@ const RULE2_AFTER_MS = 600_000; // parent may run up to 10 min past the start
 
 /**
  * Group entries into projects → worktree groups → session nodes, nesting
- * lci sessions under their spawning Claude session when one can be found:
- *   1. exact — lci cwd is a scratchpad of a known Claude session id;
+ * lci sessions under the host session (Claude Code, OpenCode, pi) that
+ * spawned them when one can be found:
+ *   1. exact — lci cwd is a scratchpad of a known Claude session id
+ *      (only Claude Code runs shell commands from a per-session scratchpad);
  *   2. heuristic — same cwd and [start − 60 s, end + 10 min] ⊇ lci start,
- *      latest such Claude start winning;
+ *      latest such host start winning, whatever its harness;
  *   3. otherwise the lci session stays a top-level row of its group.
  */
 export function buildIndex(entries: SessionEntry[]): ProjectGroup[] {
-  const claude = entries.filter((e) => e.kind === 'claude');
+  const hosts = entries.filter((e) => isHostKind(e.kind));
   const lci = entries.filter((e) => e.kind === 'lci');
 
   // Every session becomes a node exactly once; parents are linked after.
   const nodes = new Map<string, SessionNode>();
-  for (const entry of [...claude, ...lci]) {
+  for (const entry of [...hosts, ...lci]) {
     nodes.set(nodeKey(entry), { entry, children: [] });
   }
   const children = new Set<string>();
-  for (const entry of lci) attachToParent(nodes, children, entry, claude);
+  for (const entry of lci) attachToParent(nodes, children, entry, hosts);
 
   const slugCwd = slugMap(entries);
 
@@ -118,19 +122,19 @@ function slugMap(entries: SessionEntry[]): Map<string, string> {
 /**
  * Find `entry`'s parent by rule 1 (exact scratchpad id) then rule 2 (same
  * cwd, and the parent's window [start − 60 s, end + 10 min] contains the
- * lci start — a long-running Claude session that began hours earlier still
+ * lci start — a long-running host session that began hours earlier still
  * qualifies).
  */
 function attachToParent(
   nodes: Map<string, SessionNode>,
   children: Set<string>,
   entry: SessionEntry,
-  claude: SessionEntry[],
+  hosts: SessionEntry[],
 ): void {
-  // Rule 1: the scratchpad uuid names the parent session exactly.
+  // Rule 1: the scratchpad uuid names the parent Claude session exactly.
   const scratch = entry.cwd === null ? null : parseScratchpadCwd(entry.cwd);
   if (scratch !== null) {
-    const parent = claude.find((c) => c.id === scratch.sessionId);
+    const parent = hosts.find((c) => c.kind === 'claude' && c.id === scratch.sessionId);
     if (parent !== undefined) {
       link(nodes, children, entry, parent);
       return;
@@ -140,7 +144,7 @@ function attachToParent(
   // that started (slightly) after the child only wins when nothing else does.
   if (entry.cwd === null) return;
   let best: SessionEntry | null = null;
-  for (const c of claude) {
+  for (const c of hosts) {
     if (c.cwd !== entry.cwd) continue;
     if (entry.startMs < c.startMs - RULE2_BEFORE_MS || entry.startMs > c.endMs + RULE2_AFTER_MS) continue;
     if (best === null || betterParent(c, best, entry.startMs)) best = c;

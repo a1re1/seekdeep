@@ -11,7 +11,7 @@ test('bun run build emits a relocatable static site', async () => {
     const proc = Bun.spawn(['bun', 'run', 'scripts/build.ts'], { cwd: root, env: { ...process.env, SEEKDEEP_OUTDIR: out }, stdout: 'pipe', stderr: 'pipe' });
     const code = await proc.exited;
     expect(code).toBe(0);
-    for (const f of ['index.html', 'main.js', 'styles.css', '.nojekyll', join('samples', 'claude-code.jsonl')]) {
+    for (const f of ['index.html', 'main.js', 'styles.css', '.nojekyll', 'sql-wasm.js', 'sql-wasm.wasm', join('samples', 'claude-code.jsonl')]) {
       expect(existsSync(join(out, f))).toBe(true);
     }
     const html = readFileSync(join(out, 'index.html'), 'utf8');

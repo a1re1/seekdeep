@@ -1,6 +1,6 @@
 // Session picker: a glass panel with a sidebar (sources to connect, projects
 // to filter by) and a flat, sortable list of sessions with lci children
-// nested under their Claude Code parent. Pure rendering: state lives in the
+// nested under the host session (Claude Code, OpenCode, pi) that ran them. Pure rendering: state lives in the
 // caller-provided model and every user action is delegated to the actions
 // callbacks, so main.ts owns connections, scanning and opening.
 
@@ -10,6 +10,7 @@ import { icon } from './icons.ts';
 import { splitWorktree } from '../index/link.ts';
 import type { ProjectGroup, SessionNode } from '../index/link.ts';
 import type { SessionEntry } from '../index/scan.ts';
+import { SOURCES, SOURCE_KINDS } from '../index/fs.ts';
 import type { SourceKind } from '../index/fs.ts';
 
 // ---- model / actions -------------------------------------------------------
@@ -28,8 +29,7 @@ export interface IndexProgress {
 }
 
 export interface IndexModel {
-  claude: IndexSourceState;
-  lci: IndexSourceState;
+  sources: Record<SourceKind, IndexSourceState>;
   projects: ProjectGroup[];
   filter: string;
   progress: IndexProgress | null;
@@ -120,9 +120,9 @@ function sidebar(model: IndexModel, actions: IndexActions): HTMLElement {
   } else {
     projects.append(
       el('p', { class: 'picker-note footnote' },
-        model.claude.connected || model.lci.connected
+        SOURCE_KINDS.some((k) => model.sources[k].connected)
           ? 'Connected, but no transcripts found yet.'
-          : 'Connect ~/.claude or ~/.lci to index your agent sessions. Directories are read locally; nothing is uploaded.',
+          : 'Connect a harness directory (~/.claude, ~/.lci, ~/.local/share/opencode, ~/.pi/agent) to index your agent sessions. Directories are read locally; nothing is uploaded.',
       ),
     );
   }
@@ -131,8 +131,7 @@ function sidebar(model: IndexModel, actions: IndexActions): HTMLElement {
     'aside',
     { class: 'picker-side' },
     el('span', { class: 'section-cap' }, 'Sources'),
-    sourceItem('claude', '~/.claude', model.claude, actions, model.busy),
-    sourceItem('lci', '~/.lci', model.lci, actions, model.busy),
+    ...SOURCE_KINDS.map((kind) => sourceItem(kind, SOURCES[kind].label, model.sources[kind], actions, model.busy)),
     el('span', { class: 'section-cap section-cap--gap' }, 'Projects'),
     projects,
     footer(model),
@@ -211,8 +210,9 @@ function sourceItem(
 
 function footer(model: IndexModel): HTMLElement {
   const parts: string[] = [];
-  if (model.claude.connected) parts.push(`${model.claude.sessions.toLocaleString()} claude`);
-  if (model.lci.connected) parts.push(`${model.lci.sessions.toLocaleString()} lci`);
+  for (const kind of SOURCE_KINDS) {
+    if (model.sources[kind].connected) parts.push(`${model.sources[kind].sessions.toLocaleString()} ${kind}`);
+  }
   const text =
     model.progress !== null
       ? `${model.progress.label} ${model.progress.done}/${model.progress.total}`

@@ -8,8 +8,16 @@
 
 import { openDb } from './fs.ts';
 import type { SourceFile, SourceKind } from './fs.ts';
-import { claudeTranscripts, lciTranscripts, scanClaude, scanLci } from './scan.ts';
+import { claudeTranscripts, lciTranscripts, piTranscripts, scanClaude, scanLci, scanOpencode, scanPi } from './scan.ts';
 import type { CachedEntry, SessionEntry } from './scan.ts';
+
+type FileKind = Exclude<SourceKind, 'opencode'>;
+const TRANSCRIPTS: Record<FileKind, (files: SourceFile[]) => SourceFile[]> = {
+  claude: claudeTranscripts,
+  lci: lciTranscripts,
+  pi: piTranscripts,
+};
+const SCANNERS: Record<FileKind, typeof scanClaude> = { claude: scanClaude, lci: scanLci, pi: scanPi };
 
 /** A cached SessionEntry plus the freshness stamps of its source files. */
 export interface CacheRecord extends CachedEntry {
@@ -31,10 +39,12 @@ export async function scanWithCache(
   files: SourceFile[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<SessionEntry[]> {
+  // OpenCode entries are derived from one database read; nothing to cache.
+  if (kind === 'opencode') return scanOpencode(files, onProgress);
   const cache = await loadScanCache();
   const byPath = new Map<string, SourceFile>();
   for (const f of files) byPath.set(f.path, f);
-  const transcripts = kind === 'claude' ? claudeTranscripts(files) : lciTranscripts(files);
+  const transcripts = TRANSCRIPTS[kind](files);
 
   const fresh: SessionEntry[] = [];
   const freshPaths = new Set<string>();
@@ -47,7 +57,7 @@ export async function scanWithCache(
 
   onProgress?.(fresh.length, transcripts.length);
   const stale = files.filter((f) => !freshPaths.has(f.path));
-  const run = kind === 'claude' ? scanClaude : scanLci;
+  const run = SCANNERS[kind];
   const scanned = await run(stale, (done) => onProgress?.(fresh.length + done, transcripts.length));
   onProgress?.(transcripts.length, transcripts.length);
 

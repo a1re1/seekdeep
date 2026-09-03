@@ -14,6 +14,16 @@ if (missing.length > 0) {
   for (const file of missing) console.error(`missing public asset: public/${file}`);
   process.exit(1);
 }
+// sql.js (OpenCode's SQLite store) is loaded lazily from next to the bundle,
+// not bundled: the wasm is ~1 MB and only OpenCode users pay for it.
+const sqlJsDir = join(projectDir, 'node_modules/sql.js/dist');
+const sqlJsFiles = ['sql-wasm.js', 'sql-wasm.wasm'];
+for (const file of sqlJsFiles) {
+  if (!existsSync(join(sqlJsDir, file))) {
+    console.error(`missing ${file} — run \`bun install\``);
+    process.exit(1);
+  }
+}
 
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
@@ -41,6 +51,8 @@ const samplesDir = join(publicDir, 'samples');
 if (existsSync(samplesDir)) {
   cpSync(samplesDir, join(distDir, 'samples'), { recursive: true });
 }
+
+for (const file of sqlJsFiles) await Bun.write(join(distDir, file), Bun.file(join(sqlJsDir, file)));
 
 // GitHub Pages: disable Jekyll processing.
 await Bun.write(join(distDir, '.nojekyll'), '');
