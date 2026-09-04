@@ -1,6 +1,6 @@
 // Pure grouping/nesting of scanned SessionEntries into the session index
 // tree: projects → worktree groups → sessions, with drip sessions nested
-// under the host session (Claude Code, OpenCode or pi) that spawned them.
+// under the host session (Claude Code, Codex, OpenCode or pi) that spawned them.
 // No I/O; fully testable.
 
 import { isHostKind } from './fs.ts';
@@ -58,7 +58,7 @@ const RULE2_AFTER_MS = 600_000; // parent may run up to 10 min past the start
 
 /**
  * Group entries into projects → worktree groups → session nodes, nesting
- * drip sessions under the host session (Claude Code, OpenCode, pi) that
+ * drip sessions under the host session (Claude Code, Codex, OpenCode, pi) that
  * spawned them when one can be found:
  *   1. exact — drip cwd is a scratchpad of a known Claude session id
  *      (only Claude Code runs shell commands from a per-session scratchpad);

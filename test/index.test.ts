@@ -3,8 +3,8 @@
 // directories or IndexedDB are touched.
 
 import { describe, expect, test } from 'bun:test';
-import type { SourceFile, SourceKind } from '../src/index/fs.ts';
-import { scanClaude, scanDrip, scanPi, type SessionEntry } from '../src/index/scan.ts';
+import { isHostKind, type SourceFile, type SourceKind } from '../src/index/fs.ts';
+import { scanClaude, scanCodex, scanDrip, scanPi, type SessionEntry } from '../src/index/scan.ts';
 import { buildIndex, parseScratchpadCwd, splitWorktree } from '../src/index/link.ts';
 
 const ms = (iso: string) => Date.parse(iso);
@@ -331,6 +331,83 @@ describe('scanPi', () => {
     expect(e!.title).toBe('hi');
     expect(e!.startMs).toBe(ms('2026-09-02T10:00:00Z'));
     expect(e!.endMs).toBe(ms('2026-09-02T10:00:05Z'));
+  });
+});
+
+// ---- codex ----------------------------------------------------------------
+
+describe('scanCodex', () => {
+  const codexFixture = async () => await Bun.file(new URL('./fixtures/codex.jsonl', import.meta.url)).text();
+
+  test('reads id/cwd/start from session_meta and the title from the first user prompt', async () => {
+    const text = await codexFixture();
+    const path = 'sessions/2026/08/30/rollout-2026-08-30T15-00-00-00000000-0000-4000-8000-000000000003.jsonl';
+    const [e] = await scanCodex([mem(path, text), mem('sessions/2026/08/30/history.jsonl', text), mem('README.md', 'x')]);
+    expect(e).toBeDefined();
+    expect(e!.kind).toBe('codex');
+    expect(e!.id).toBe('sess-cx-1');
+    expect(e!.cwd).toBe('/work/demo');
+    expect(e!.slug).toBe('demo');
+    expect(e!.title).toBe('fix the failing build');
+    expect(e!.startMs).toBe(ms('2026-08-30T15:00:00.000Z'));
+    expect(e!.endMs).toBe(ms('2026-08-30T15:00:03.000Z'));
+    expect(e!.branch).toBeNull();
+  });
+
+  test('every rollout-*.jsonl under the picked directory is a transcript, other jsonl is not', async () => {
+    const text = await codexFixture();
+    const entries = await scanCodex([
+      mem('sessions/2026/08/30/rollout-a.jsonl', text),
+      mem('rollout-b.jsonl', text),
+      mem('sessions/2026/08/30/history.jsonl', text),
+      mem('sessions/2026/08/30/rollout-c.jsonl.bak', text),
+    ]);
+    expect(entries.map((e) => e.path).sort()).toEqual(['rollout-b.jsonl', 'sessions/2026/08/30/rollout-a.jsonl']);
+  });
+
+  test('falls back to the file name id and line timestamps when session_meta is missing', async () => {
+    const text = lines(
+      { timestamp: '2026-09-01T08:00:00Z', type: 'event_msg', payload: { type: 'user_message', message: 'ship it' } },
+      { timestamp: '2026-09-01T08:00:05Z', type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1' } },
+    ) + '\n{oops';
+    const [e] = await scanCodex([mem('sessions/2026/09/01/rollout-2026-09-01-abc123.jsonl', text)]);
+    expect(e!.id).toBe('rollout-2026-09-01-abc123');
+    expect(e!.cwd).toBeNull();
+    expect(e!.slug).toBe('rollout-2026-09-01-abc123');
+    expect(e!.title).toBe('ship it');
+    expect(e!.startMs).toBe(ms('2026-09-01T08:00:00Z'));
+    expect(e!.endMs).toBe(ms('2026-09-01T08:00:05Z'));
+  });
+
+  test('retries a large session_meta record and reads its git branch', async () => {
+    const text = lines(
+      {
+        timestamp: '2026-09-01T08:00:00Z',
+        type: 'session_meta',
+        payload: {
+          id: 'codex-large',
+          timestamp: '2026-09-01T08:00:00Z',
+          cwd: '/Users/t/proj',
+          git: { branch: 'feature/codex' },
+          base_instructions: { text: 'x'.repeat(70 * 1024) },
+        },
+      },
+      { timestamp: '2026-09-01T08:00:01Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'large prompt' }] } },
+    );
+    const [e] = await scanCodex([mem('sessions/2026/09/01/rollout-large.jsonl', text)]);
+    expect(e).toMatchObject({ id: 'codex-large', cwd: '/Users/t/proj', branch: 'feature/codex', title: 'large prompt' });
+  });
+});
+
+describe('buildIndex with Codex hosts', () => {
+  test('a same-cwd drip run nests under its Codex session', () => {
+    const start = ms('2026-09-02T10:00:00Z');
+    const codex = ent('codex', 'codex-1', '/Users/t/proj', start, start + 60_000);
+    const drip = ent('drip', 'drip-1', '/Users/t/proj', start + 10_000, start + 40_000);
+    const roots = buildIndex([codex, drip]).flatMap((p) => p.worktrees.flatMap((g) => g.sessions));
+    expect(isHostKind('codex')).toBe(true);
+    expect(roots.map((n) => n.entry.id)).toEqual(['codex-1']);
+    expect(roots[0]!.children.map((n) => n.entry.id)).toEqual(['drip-1']);
   });
 });
 

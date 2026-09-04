@@ -1,5 +1,5 @@
 // Grafting a child harness session (an drip run) into the span tree of the
-// host session (Claude Code, OpenCode or pi) that launched it, so one
+// host session (Claude Code, Codex, OpenCode or pi) that launched it, so one
 // waterfall shows the whole multi-harness journey. Pure: no I/O, no DOM.
 //
 // Host selection, in order:

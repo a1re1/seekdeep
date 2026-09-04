@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findLaunchSpan, graftSession, graftedIds, isEmptySession, isDripLaunch } from '../src/graft.ts';
+import { findLaunchSpan, graftSession, graftedIds, isEmptySession, isDripLaunch, isHostFormat } from '../src/graft.ts';
 import type { Session, Span } from '../src/model.ts';
 import { flatten } from '../src/model.ts';
 import { makeRoot, makeSpan } from '../src/parsers/util.ts';
@@ -30,6 +30,13 @@ function child(id: string, start: number, end: number): Session {
   root.children.push(makeSpan('model', 'glm-5', at(start + 1), at(start + 2), 'root'));
   return { format: 'drip', id, title: `goal ${id}`, root, warnings: [] };
 }
+
+describe('isHostFormat', () => {
+  test('Codex can host drip sessions, while drip cannot host itself', () => {
+    expect(isHostFormat('codex')).toBe(true);
+    expect(isHostFormat('drip')).toBe(false);
+  });
+});
 
 describe('isDripLaunch', () => {
   test('still matches lci, the predecessor name found in older transcripts', () => {
