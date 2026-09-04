@@ -13,17 +13,20 @@ export interface ActivityModel {
   /** Transcript paths the last collection could not read; the totals omit them. */
   skipped: string[];
   preset: string;
-  /** Harnesses present in the data (claude, drip, …); the filter offers All plus each of these. */
+  /** Harnesses present in the data (claude, drip, …); the filter offers these plus an All option. */
   harnesses: string[];
-  /** Selected harness, or null for all. */
-  harness: string | null;
+  /** Selected harnesses, or null for every harness. */
+  harness: string[] | null;
+  /** Whether the harness checklist is expanded. */
+  harnessOpen: boolean;
   /** Shown instead of the dashboard when there is nothing to aggregate. */
   empty: string | null;
 }
 
 export interface ActivityActions {
   onRange(preset: string): void;
-  onHarness(harness: string | null): void;
+  onHarness(harness: string[] | null): void;
+  onHarnessOpen(open: boolean): void;
   onRescan(): void;
 }
 
@@ -40,6 +43,14 @@ const PALETTE = [
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+let clearHarnessDismiss: (() => void) | null = null;
+
+/** Remove document-level listeners when the activity view is hidden. */
+export function cleanupActivityView(): void {
+  clearHarnessDismiss?.();
+  clearHarnessDismiss = null;
+}
+
 function svgEl(tag: string, attrs: Record<string, string | number> = {}): SVGElement {
   const node = document.createElementNS(SVG_NS, tag);
   for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
@@ -47,6 +58,7 @@ function svgEl(tag: string, attrs: Record<string, string | number> = {}): SVGEle
 }
 
 export function renderActivity(host: HTMLElement, model: ActivityModel, actions: ActivityActions): void {
+  cleanupActivityView();
   host.replaceChildren();
   host.append(buildToolbar(model, actions));
   if (model.skipped.length > 0 && model.progress === null) host.append(buildSkippedBar(model.skipped));
@@ -106,7 +118,7 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   status.className = 'footnote activity-status';
   status.textContent = model.progress ?? '';
   toolbar.append(title, subtitle, spacer, status);
-  if (model.harnesses.length > 0) toolbar.append(harnessSeg(model, actions));
+  if (model.harnesses.length > 0) toolbar.append(harnessPick(model, actions));
   toolbar.append(selectWrap, rescan);
   return toolbar;
 }
@@ -127,22 +139,133 @@ export function buildSkippedBar(skipped: string[]): HTMLElement {
   return bar;
 }
 
-/** All | claude | drip | … — filters every card, chart and table row by harness. */
-function harnessSeg(model: ActivityModel, actions: ActivityActions): HTMLElement {
-  const seg = document.createElement('nav');
-  seg.className = 'vt-seg';
-  seg.id = 'activity-harness';
-  seg.setAttribute('aria-label', 'filter by harness');
-  const options: Array<[string | null, string]> = [[null, 'All'], ...model.harnesses.map((h): [string, string] => [h, h])];
-  for (const [value, label] of options) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = label;
-    button.setAttribute('aria-pressed', model.harness === value ? 'true' : 'false');
-    button.addEventListener('click', () => actions.onHarness(value));
-    seg.append(button);
+/** Filters every card, chart and table row by harness: a compact multi-select checklist. */
+function harnessPick(model: ActivityModel, actions: ActivityActions): HTMLElement {
+  const selected = model.harness;
+  const pick = document.createElement('div');
+  pick.className = 'vt-multiselect';
+  pick.id = 'activity-harness';
+  const summary = harnessTriggerLabel(selected, model.harnesses);
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'vt-btn vt-btn--glass vt-multiselect__trigger';
+  trigger.id = 'activity-harness-trigger';
+  trigger.setAttribute('aria-expanded', model.harnessOpen ? 'true' : 'false');
+  trigger.setAttribute('aria-controls', 'activity-harness-menu');
+  trigger.setAttribute('aria-label', `filter by harness: ${summary.toLowerCase()}`);
+  trigger.append(
+    Object.assign(document.createElement('span'), { className: 'vt-multiselect__label', textContent: summary }),
+    icon('chevron-down', 12),
+  );
+  const menu = document.createElement('div');
+  menu.className = 'vt-multiselect__menu';
+  menu.id = 'activity-harness-menu';
+  menu.setAttribute('role', 'group');
+  menu.setAttribute('aria-label', 'filter by harness');
+  menu.hidden = !model.harnessOpen;
+  trigger.addEventListener('click', () => {
+    actions.onHarnessOpen(!model.harnessOpen);
+    document.getElementById('activity-harness-trigger')?.focus();
+  });
+  // Master option: resets to every harness (selection null). Keyboard-operable
+  // pressed button so the “all” state is announced like the checkboxes below.
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.id = 'activity-harness-all';
+  all.className = 'vt-multiselect__option vt-multiselect__option--master';
+  all.setAttribute('aria-pressed', selected === null ? 'true' : 'false');
+  const mark = document.createElement('span');
+  mark.className = 'vt-multiselect__check';
+  mark.textContent = '✓';
+  const allLabel = document.createElement('span');
+  allLabel.className = 'vt-multiselect__option-label';
+  allLabel.textContent = 'All harnesses';
+  all.append(mark, allLabel);
+  all.addEventListener('click', () => {
+    actions.onHarness(null);
+    document.getElementById('activity-harness-all')?.focus();
+  });
+  menu.append(all);
+  // One checkbox per harness; native inputs keep tab/space and screen-reader
+  // semantics working without custom key handling. Selection applies at once.
+  for (const h of model.harnesses) {
+    const opt = document.createElement('label');
+    opt.className = 'vt-multiselect__option';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'vt-multiselect__box';
+    box.value = h;
+    box.checked = selected === null || selected.includes(h);
+    const label = document.createElement('span');
+    label.className = 'vt-multiselect__option-label';
+    label.textContent = h;
+    opt.append(box, label);
+    box.addEventListener('change', () => {
+      actions.onHarness(toggleHarness(selected, h, model.harnesses));
+      for (const next of document.querySelectorAll<HTMLInputElement>('#activity-harness .vt-multiselect__box')) {
+        if (next.value === h) {
+          next.focus();
+          break;
+        }
+      }
+    });
+    menu.append(opt);
   }
-  return seg;
+  pick.append(trigger, menu);
+  if (model.harnessOpen) {
+    const dismissOutside = (event: PointerEvent): void => {
+      if (!(event.target instanceof Node) || !pick.contains(event.target)) actions.onHarnessOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      actions.onHarnessOpen(false);
+      document.getElementById('activity-harness-trigger')?.focus();
+    };
+    document.addEventListener('pointerdown', dismissOutside, true);
+    document.addEventListener('keydown', dismissOnEscape);
+    clearHarnessDismiss = () => {
+      document.removeEventListener('pointerdown', dismissOutside, true);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
+  }
+  return pick;
+}
+
+/** “All harnesses” | one name | “N harnesses” | “None”. */
+export function harnessTriggerLabel(selected: string[] | null, available: string[]): string {
+  if (selected === null || selected.length === available.length) return 'All harnesses';
+  if (selected.length === 0) return 'No harnesses';
+  if (selected.length === 1) return selected[0] ?? '';
+  return `${selected.length} harnesses`;
+}
+
+/**
+ * Toggle one harness in a selection, treating null as “every harness” and
+ * normalizing empty/full selections back to null (all).
+ */
+export function toggleHarness(selected: string[] | null, harness: string, available: string[]): string[] | null {
+  if (selected === null) return available.length <= 1 ? null : available.filter((h) => h !== harness);
+  const has = selected.includes(harness);
+  const next = has ? selected.filter((h) => h !== harness) : [...selected, harness];
+  return next.length === 0 || next.length === available.length ? null : next;
+}
+
+/** OR filter: null (all) matches every bucket; otherwise the bucket’s harness must be picked. Buckets without a harness count as “other”. */
+export function harnessMatches(selected: string[] | null, bucketHarness: string | undefined): boolean {
+  return selected === null || selected.includes(bucketHarness ?? 'other');
+}
+
+/**
+ * Reconcile a selection with the harnesses now present in the data: null stays
+ * null (all, so newly discovered harnesses are included), stale names are
+ * dropped, and a selection that ends up covering every harness collapses to
+ * null. Selection order is normalized to the available order.
+ */
+export function reconcileHarnessSelection(selected: string[] | null, available: string[]): string[] | null {
+  if (selected === null || available.length === 0) return null;
+  const kept = available.filter((h) => selected.includes(h));
+  return kept.length === 0 || kept.length === available.length ? null : kept;
 }
 
 // ---- headline cards ----------------------------------------------------------

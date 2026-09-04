@@ -22,7 +22,7 @@ import { byId, el, sizeCanvas } from './ui/dom.ts';
 import { icon } from './ui/icons.ts';
 import { readFiles } from './ui/loader.ts';
 import { renderPricingEditor } from './ui/pricing.ts';
-import { renderActivity } from './ui/activity-view.ts';
+import { cleanupActivityView, harnessMatches, reconcileHarnessSelection, renderActivity } from './ui/activity-view.ts';
 import { aggregate, bucketSession, mergeBuckets, rangeFor } from './stats.ts';
 import type { UsageBucket } from './stats.ts';
 import { renderSummary, summarize } from './ui/summary.ts';
@@ -73,7 +73,8 @@ function main(): void {
   const activity = {
     page: 'trace' as Page,
     preset: '48h',
-    harness: null as string | null, // null = every harness
+    harness: null as string[] | null, // null = every harness (all-selected default)
+    harnessOpen: false,
     buckets: null as UsageBucket[] | null, // null until the first collection
     collecting: false,
     progress: null as string | null,
@@ -528,6 +529,10 @@ function main(): void {
   navSettings.replaceChildren(icon('settings', 16));
 
   function showPage(page: Page): void {
+    if (activity.page === 'activity' && page !== 'activity') {
+      activity.harnessOpen = false;
+      cleanupActivityView();
+    }
     activity.page = page;
     navTrace.setAttribute('aria-pressed', page === 'trace' ? 'true' : 'false');
     navActivity.setAttribute('aria-pressed', page === 'activity' ? 'true' : 'false');
@@ -592,8 +597,9 @@ function main(): void {
     const preset = activity.preset as '48h' | '7d' | '30d' | 'all';
     const all = activity.buckets;
     const harnesses = all === null ? [] : [...new Set(all.map((b) => b.harness ?? 'other'))].sort();
-    if (activity.harness !== null && !harnesses.includes(activity.harness)) activity.harness = null; // e.g. that source was forgotten
-    const buckets = all === null || activity.harness === null ? all : all.filter((b) => (b.harness ?? 'other') === activity.harness);
+    if (all !== null) activity.harness = reconcileHarnessSelection(activity.harness, harnesses);
+    const selected = activity.harness; // narrowed snapshot: null = all, otherwise OR-membership
+    const buckets = all === null || selected === null ? all : all.filter((b) => harnessMatches(selected, b.harness));
     renderActivity(
       activityHost,
       {
@@ -603,6 +609,7 @@ function main(): void {
         preset: activity.preset,
         harnesses,
         harness: activity.harness,
+        harnessOpen: activity.harnessOpen,
         empty: nothing
           ? 'Connect ~/.claude, ~/.codex, or ~/.drip from the session picker (or drop a transcript) to see your activity.'
           : buckets === null
@@ -618,7 +625,12 @@ function main(): void {
           activity.harness = h;
           renderActivityPage();
         },
+        onHarnessOpen: (open) => {
+          activity.harnessOpen = open;
+          renderActivityPage();
+        },
         onRescan: () => {
+          activity.harnessOpen = false;
           activity.buckets = null;
           void collectActivity();
         },
