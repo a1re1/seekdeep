@@ -8,16 +8,17 @@
 
 import { openDb } from './fs.ts';
 import type { SourceFile, SourceKind } from './fs.ts';
-import { claudeTranscripts, dripTranscripts, piTranscripts, scanClaude, scanDrip, scanOpencode, scanPi } from './scan.ts';
+import { claudeTranscripts, codexTranscripts, dripTranscripts, piTranscripts, scanClaude, scanCodex, scanDrip, scanOpencode, scanPi } from './scan.ts';
 import type { CachedEntry, SessionEntry } from './scan.ts';
 
 type FileKind = Exclude<SourceKind, 'opencode'>;
 const TRANSCRIPTS: Record<FileKind, (files: SourceFile[]) => SourceFile[]> = {
   claude: claudeTranscripts,
+  codex: codexTranscripts,
   drip: dripTranscripts,
   pi: piTranscripts,
 };
-const SCANNERS: Record<FileKind, typeof scanClaude> = { claude: scanClaude, drip: scanDrip, pi: scanPi };
+const SCANNERS: Record<FileKind, typeof scanClaude> = { claude: scanClaude, codex: scanCodex, drip: scanDrip, pi: scanPi };
 
 /** A cached SessionEntry plus the freshness stamps of its source files. */
 export interface CacheRecord extends CachedEntry {

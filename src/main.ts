@@ -343,7 +343,7 @@ function main(): void {
 
   /**
    * Read every drip session the index nests under this host session (Claude
-   * Code, OpenCode or pi) and graft it under the shell call that launched it
+   * Code, Codex, OpenCode or pi) and graft it under the shell call that launched it
    * (or the active turn), so the waterfall shows the whole multi-harness
    * journey. Runs after the first paint; the trace refreshes in place when
    * it is done.
@@ -555,7 +555,7 @@ function main(): void {
 
   /** Index entries plus sessions that were dropped in and are not in the index. */
   function activitySources(): { entries: SessionEntry[]; extra: Session[] } {
-    const entries = [...index.entries.claude, ...index.entries.drip];
+    const entries = [...index.entries.claude, ...index.entries.codex, ...index.entries.drip];
     const known = new Set(entries.map((e) => e.id));
     const extra = state.sessions.map((l) => l.session).filter((s) => !known.has(s.id));
     return { entries, extra };
@@ -604,7 +604,7 @@ function main(): void {
         harnesses,
         harness: activity.harness,
         empty: nothing
-          ? 'Connect ~/.claude or ~/.drip from the session picker (or drop a transcript) to see your activity.'
+          ? 'Connect ~/.claude, ~/.codex, or ~/.drip from the session picker (or drop a transcript) to see your activity.'
           : buckets === null
             ? 'Reading transcripts…'
             : null,

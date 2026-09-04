@@ -47,8 +47,8 @@ Format is auto-detected from the first few records. Unknown files fall back
 to a generic parser that looks for `timestamp` + `usage`-shaped objects.
 
 The session picker connects each harness's home directory (`~/.claude`,
-`~/.drip`, `~/.local/share/opencode`, `~/.pi/agent`) and nests drip runs under
-the Claude Code, OpenCode or pi session that launched them — matched by the
+`~/.codex`, `~/.drip`, `~/.local/share/opencode`, `~/.pi/agent`) and nests drip runs under
+the Claude Code, Codex, OpenCode or pi session that launched them — matched by the
 launching session's scratchpad (Claude Code) or by same working directory and
 time window — and grafts them into that session's waterfall under the shell
 call that ran `drip` (or `lci`, its predecessor). OpenCode's SQLite store is read in the browser with
@@ -98,8 +98,10 @@ we run day to day; when a tool changes its schema, open an issue with a
   directories connect as the drip source too. `inference` events only exist
   in recent builds; older transcripts
   still produce loop/tool spans with a "no inference events" warning.
-- Codex: `token_count` / `function_call` handling follows Codex's rollout
-  schema but has only been exercised on synthetic fixtures so far.
+- Codex: the session index scans `~/.codex/sessions` rollout transcripts
+  (session id, cwd, title and timestamps from `session_meta` and the first
+  user prompt); `token_count` / `function_call` handling follows Codex's
+  rollout schema but has been exercised mainly on synthetic fixtures so far.
 - OpenCode: read from the 1.x SQLite schema (`session`, `message`, `part`
   tables); the pre-1.0 JSON storage layout is not scanned. Child sessions
   (sub-agents) fold into their root session's trace.

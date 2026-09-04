@@ -25,7 +25,7 @@ export interface SourceFile {
   refresh?(): Promise<SourceFile>;
 }
 
-export type SourceKind = 'claude' | 'drip' | 'opencode' | 'pi';
+export type SourceKind = 'claude' | 'codex' | 'drip' | 'opencode' | 'pi';
 
 export interface SourceSpec {
   /** Where the harness keeps its data, shown as the source label. */
@@ -39,6 +39,7 @@ export interface SourceSpec {
 /** Every harness the index can connect, in display order. */
 export const SOURCES: Record<SourceKind, SourceSpec> = {
   claude: { label: '~/.claude', sessionsDir: 'projects', maxDepth: 8 },
+  codex: { label: '~/.codex', sessionsDir: 'sessions', maxDepth: 8 },
   drip: { label: '~/.drip', sessionsDir: 'projects', maxDepth: 8 },
   opencode: { label: '~/.local/share/opencode', sessionsDir: null, maxDepth: 0 },
   pi: { label: '~/.pi/agent', sessionsDir: 'sessions', maxDepth: 8 },

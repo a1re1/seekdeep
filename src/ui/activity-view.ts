@@ -99,7 +99,7 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   title.textContent = 'Activity';
   const subtitle = document.createElement('span');
   subtitle.className = 'footnote';
-  subtitle.textContent = 'Your usage across models from ~/.claude and ~/.drip';
+  subtitle.textContent = 'Your usage across models from ~/.claude, ~/.codex, and ~/.drip';
   const spacer = document.createElement('span');
   spacer.className = 'spacer';
   const status = document.createElement('span');

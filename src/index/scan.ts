@@ -1,4 +1,4 @@
-// Pure, testable scanning of Claude Code, drip, pi and OpenCode sources into
+// Pure, testable scanning of Claude Code, Codex, drip, pi and OpenCode sources into
 // SessionEntry records. Only the first 64 KiB (head) and last 16 KiB (tail)
 // of each transcript are read: the head carries cwd/branch/title/start, the
 // tail the last timestamp. Files are scanned in small batches so large
@@ -61,6 +61,19 @@ export async function scanPi(
   onProgress?: (done: number, total: number) => void,
 ): Promise<SessionEntry[]> {
   const entries = await mapBatched(piTranscripts(files), scanPiFile, onProgress);
+  return keepScanned(entries);
+}
+
+/**
+ * Codex rollout transcripts (`sessions/<Y>/<M>/<D>/rollout-*.jsonl`): line 1 is
+ * a `session_meta` record carrying id/cwd/timestamp, every line a top-level
+ * `timestamp`.
+ */
+export async function scanCodex(
+  files: SourceFile[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<SessionEntry[]> {
+  const entries = await mapBatched(codexTranscripts(files), scanCodexFile, onProgress);
   return keepScanned(entries);
 }
 
@@ -164,6 +177,11 @@ export function piTranscripts(files: SourceFile[]): SourceFile[] {
     const i = parts.lastIndexOf('sessions');
     return i >= 0 && parts.length - i === 3;
   });
+}
+
+/** Any `rollout-*.jsonl` anywhere under the picked directory. */
+export function codexTranscripts(files: SourceFile[]): SourceFile[] {
+  return files.filter((f) => /^rollout-.*\.jsonl$/.test(f.name));
 }
 
 function keepScanned(entries: (SessionEntry | null)[]): SessionEntry[] {
@@ -432,6 +450,102 @@ function piText(content: unknown): string | null {
     if (block !== null && typeof block === 'object' && !Array.isArray(block)) {
       const b = block as Record<string, unknown>;
       if (b.type === 'text' && typeof b.text === 'string') return titleText(b.text);
+    }
+  }
+  return null;
+}
+
+// ---- codex ----------------------------------------------------------------
+
+async function scanCodexFile(file: SourceFile): Promise<SessionEntry | null> {
+  try {
+    let { head, tail } = await readHeadTail(file);
+    let h = codexHead(head);
+    // session_meta may include the full instruction payload, making the first
+    // JSONL record (and therefore the first user prompt) larger than 64 KiB.
+    if ((h.id === null || h.cwd === null || h.title === '') && file.size > HEAD_BYTES) {
+      head = await file.text({ end: BIG_HEAD_BYTES });
+      h = codexHead(head);
+    }
+    let endMs = lastTs(tail, 'timestamp');
+    if (Number.isNaN(endMs) && file.size > TAIL_BYTES) {
+      tail = await file.text({ start: Math.max(0, file.size - BIG_TAIL_BYTES) });
+      endMs = lastTs(tail, 'timestamp');
+    }
+    if (Number.isNaN(endMs)) endMs = lastTs(head, 'timestamp');
+    let startMs = h.startMs;
+    if (Number.isNaN(startMs)) startMs = firstTs(head, 'timestamp');
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
+    const stem = file.name.replace(/\.jsonl$/, '');
+    return {
+      kind: 'codex',
+      id: h.id ?? stem,
+      path: file.path,
+      slug: h.cwd !== null ? (h.cwd.split('/').filter((p) => p.length > 0).pop() ?? stem) : stem,
+      cwd: h.cwd,
+      branch: h.branch,
+      title: h.title,
+      startMs,
+      endMs: Math.max(endMs, startMs),
+      sizeBytes: file.size,
+      file,
+    };
+  } catch {
+    return null; // unreadable file → skip, never throw
+  }
+}
+
+interface CodexHead {
+  id: string | null;
+  cwd: string | null;
+  branch: string | null;
+  title: string;
+  startMs: number;
+}
+
+/** The `session_meta` header (id, cwd, timestamp) and the first user prompt. */
+function codexHead(head: string): CodexHead {
+  const out: CodexHead = { id: null, cwd: null, branch: null, title: '', startMs: NaN };
+  for (const line of head.split('\n')) {
+    const rec = tryParse(line);
+    if (rec === null) continue;
+    const p = rec.payload;
+    const payload = p !== null && typeof p === 'object' && !Array.isArray(p)
+      ? (p as Record<string, unknown>)
+      : null;
+    if (rec.type === 'session_meta' && payload !== null) {
+      if (out.id === null && typeof payload.id === 'string' && payload.id.length > 0) out.id = payload.id;
+      if (out.cwd === null && typeof payload.cwd === 'string' && payload.cwd.length > 0) out.cwd = payload.cwd;
+      const git = payload.git;
+      if (out.branch === null && git !== null && typeof git === 'object' && !Array.isArray(git)) {
+        const branch = (git as Record<string, unknown>).branch;
+        if (typeof branch === 'string' && branch.length > 0) out.branch = branch;
+      }
+      if (Number.isNaN(out.startMs)) out.startMs = parseTs(payload.timestamp);
+      if (Number.isNaN(out.startMs)) out.startMs = parseTs(rec.timestamp);
+    }
+    if (out.title === '' && payload !== null) {
+      if (rec.type === 'response_item' && payload.type === 'message' && payload.role === 'user') {
+        out.title = codexText(payload.content) ?? '';
+      } else if (rec.type === 'event_msg' && payload.type === 'user_message') {
+        out.title = typeof payload.message === 'string' ? titleText(payload.message) ?? '' : '';
+      }
+    }
+    if (out.title !== '' && out.id !== null && out.cwd !== null && !Number.isNaN(out.startMs)) break;
+  }
+  return out;
+}
+
+/** First user text in a response_item content array (`input_text` blocks). */
+function codexText(content: unknown): string | null {
+  if (typeof content === 'string') return titleText(content);
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (block !== null && typeof block === 'object' && !Array.isArray(block)) {
+      const b = block as Record<string, unknown>;
+      if ((b.type === 'input_text' || b.type === 'text') && typeof b.text === 'string') {
+        return titleText(b.text);
+      }
     }
   }
   return null;
