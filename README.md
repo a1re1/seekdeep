@@ -81,7 +81,12 @@ bun run test
   never sees format-specific fields, so adding a new agent tool is one file.
 - **Costs are estimates.** Pricing comes from `src/pricing.ts` (per-model
   input / output / cache-read / cache-write rates). Edit it in the UI if your
-  rates differ; the table is stored in `localStorage`.
+  rates differ; the table is stored in `localStorage`. A row may also carry a
+  `longContext` tier that reprices a whole request once its prompt passes a
+  threshold (GPT-6 Astra: 2x input, 1.5x output past 272K); tiers are not
+  editable in the UI. On the activity page, where usage is already summed into
+  hourly buckets, the threshold is applied to a bucket's mean prompt size — an
+  hour mixing one long request with many short ones reads low.
 - **Large files.** Transcripts run to hundreds of MB. Parsing streams line by
   line and skips content bodies it doesn't need (thinking text, tool output),
   keeping only what the graph displays.

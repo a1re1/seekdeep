@@ -157,6 +157,20 @@ describe('aggregate', () => {
     expect(byCustom.perModel[0]!.inputPrice).toBe(42);
   });
 
+  test('the long-context tier is judged per request, not on the bucket total', () => {
+    // 1M prompt tokens across 10 calls averages 100K each — under Astra's 272K threshold.
+    const spread = bucket(h, 'gpt-6-astra', { requests: 10, input: 1_000_000, output: 10_000 });
+    expect(aggregate([spread], DEFAULT_PRICING, r).totals.costUsd).toBeCloseTo(10.5, 6);
+    // The same tokens in one call do cross it: 2x input, 1.5x output.
+    const single = bucket(h, 'gpt-6-astra', { requests: 1, input: 1_000_000, output: 10_000 });
+    expect(aggregate([single], DEFAULT_PRICING, r).totals.costUsd).toBeCloseTo(20.75, 6);
+    // The previous-period loop threads `requests` the same way.
+    const prevSpread = bucket(h - 60 * HOUR, 'gpt-6-astra', { requests: 10, input: 1_000_000, output: 10_000 });
+    expect(aggregate([single, prevSpread], DEFAULT_PRICING, r).previous.costUsd).toBeCloseTo(10.5, 6);
+    const prevSingle = bucket(h - 60 * HOUR, 'gpt-6-astra', { requests: 1, input: 1_000_000, output: 10_000 });
+    expect(aggregate([single, prevSingle], DEFAULT_PRICING, r).previous.costUsd).toBeCloseTo(20.75, 6);
+  });
+
   test('per-model rows carry latency and throughput', () => {
     const a = aggregate([bucket(h, 'claude-opus-5', { requests: 2, output: 400, latencyMs: 4000 })], DEFAULT_PRICING, r);
     expect(a.perModel[0]!.avgLatencyMs).toBe(2000);

@@ -4,13 +4,29 @@
 
 import type { Session, Span, Usage } from './model.ts';
 
+/**
+ * Long-context repricing. A request whose prompt exceeds `thresholdTokens` is
+ * billed for the *whole* request at these multipliers, not just the overflow.
+ */
+export interface LongContextTier {
+  thresholdTokens: number;
+  inputMultiplier: number; // applies to input, cache reads, and cache writes
+  outputMultiplier: number;
+}
+
 export interface PriceRow {
   input: number; // USD per 1M tokens
   output: number;
   cacheRead: number;
   cacheWrite5m: number;
   cacheWrite1h: number;
+  longContext?: LongContextTier;
 }
+
+/** The per-1M-token rate fields of a PriceRow — the ones the UI grid edits. */
+export type NumericPriceField = {
+  [K in keyof PriceRow]-?: PriceRow[K] extends number ? K : never;
+}[keyof PriceRow];
 
 export type PricingTable = Record<string, PriceRow>;
 
@@ -48,6 +64,18 @@ export const DEFAULT_PRICING: PricingTable = {
   'claude-sonnet-4-5': anthropicRow(3, 15),
   'claude-haiku-4-5': anthropicRow(1, 5),
   // OpenAI
+  // GPT-6 Astra: $10 in / $50 out, cached input $1, cache writes $12.50 (1.25x input).
+  // Unlike the other OpenAI rows Astra bills cache writes, and it has no separate 1h
+  // tier, so both write fields carry the single rate. Past 272K prompt tokens the
+  // whole request reprices at 2x input/cache rates and 1.5x output.
+  'gpt-6-astra': {
+    input: 10,
+    output: 50,
+    cacheRead: 1,
+    cacheWrite5m: 12.5,
+    cacheWrite1h: 12.5,
+    longContext: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 },
+  },
   'gpt-5': openaiRow(1.25, 10),
   'gpt-5-mini': openaiRow(0.25, 2),
   'gpt-5-codex': openaiRow(1.25, 10),
@@ -101,25 +129,16 @@ const PER = 1_000_000;
  * Unknown model → 0 (the caller is responsible for warning).
  * Plain `cacheWrite` tokens not broken out by 5m/1h are charged at the
  * 5m rate; explicit `cacheWrite5m`/`cacheWrite1h` are charged at theirs.
+ * `requests` is how many API calls `usage` covers — see `costWith`.
  */
-export function costOf(usage: Usage, model: string, table: PricingTable = DEFAULT_PRICING): number {
+export function costOf(
+  usage: Usage,
+  model: string,
+  table: PricingTable = DEFAULT_PRICING,
+  requests = 1,
+): number {
   const row = priceFor(model, table);
-  if (row === null) return 0;
-  const input = usage.input || 0;
-  const cacheRead = usage.cacheRead || 0;
-  const cacheWrite = usage.cacheWrite || 0;
-  const w5m = usage.cacheWrite5m ?? 0;
-  const w1h = usage.cacheWrite1h ?? 0;
-  const wOther = Math.max(0, cacheWrite - w5m - w1h);
-  const output = usage.output || 0;
-  return (
-    input * row.input +
-    cacheRead * row.cacheRead +
-    w5m * row.cacheWrite5m +
-    w1h * row.cacheWrite1h +
-    wOther * row.cacheWrite5m +
-    output * row.output
-  ) / PER;
+  return row === null ? 0 : costWith(row, usage, requests);
 }
 
 /**
@@ -155,19 +174,38 @@ export function applyPricing(session: Session, table: PricingTable): void {
   rollup(session.root);
 }
 
-function costWith(row: PriceRow, usage: Usage): number {
+/**
+ * Cost of `usage` under an explicit row.
+ *
+ * `requests` is how many API calls `usage` covers: 1 for a single model span,
+ * the bucket's request count for an hourly aggregate. It matters only for rows
+ * with a `longContext` tier, whose threshold is per request — an aggregate is
+ * judged on its mean prompt size so that many small calls in one hour don't
+ * add up to a false long-context hit.
+ */
+function costWith(row: PriceRow, usage: Usage, requests = 1): number {
+  const input = usage.input || 0;
+  const cacheRead = usage.cacheRead || 0;
   const cacheWrite = usage.cacheWrite || 0;
   const w5m = usage.cacheWrite5m ?? 0;
   const w1h = usage.cacheWrite1h ?? 0;
   const wOther = Math.max(0, cacheWrite - w5m - w1h);
-  return (
-    (usage.input || 0) * row.input +
-    (usage.cacheRead || 0) * row.cacheRead +
+  const promptCost =
+    input * row.input +
+    cacheRead * row.cacheRead +
     w5m * row.cacheWrite5m +
     w1h * row.cacheWrite1h +
-    wOther * row.cacheWrite5m +
-    (usage.output || 0) * row.output
-  ) / PER;
+    wOther * row.cacheWrite5m;
+  const outputCost = (usage.output || 0) * row.output;
+
+  const tier = row.longContext;
+  if (tier !== undefined) {
+    const promptPerRequest = (input + cacheRead + cacheWrite) / Math.max(1, requests);
+    if (promptPerRequest > tier.thresholdTokens) {
+      return (promptCost * tier.inputMultiplier + outputCost * tier.outputMultiplier) / PER;
+    }
+  }
+  return (promptCost + outputCost) / PER;
 }
 
 // ---------------------------------------------------------------------------
