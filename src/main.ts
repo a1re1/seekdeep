@@ -16,7 +16,14 @@ import { flatten } from './model.ts';
 import { findLaunchSpan, graftSession, graftedIds, isEmptySession, isHostFormat } from './graft.ts';
 import { parseTranscript } from './parsers/index.ts';
 import { applyPricing, effectivePricing } from './pricing.ts';
-import { collectCacheBars, drawCacheTrace } from './ui/cache-trace.ts';
+import {
+  bindCacheStrip,
+  cacheSpanAt,
+  cacheTooltipText,
+  collectCacheBars,
+  drawCacheTrace,
+  freshCacheStripState,
+} from './ui/cache-trace.ts';
 import { renderDetail, renderEmptyDetail } from './ui/detail.ts';
 import { byId, el, sizeCanvas } from './ui/dom.ts';
 import { icon } from './ui/icons.ts';
@@ -49,6 +56,9 @@ const state = {
   trace: null as TraceView | null,
   t0: 0,
   t1: 0,
+  /** Live cache-strip hit-test geometry, rebound on every render so a queued
+   *  event from an earlier paint can never select a stale span. */
+  cacheStrip: freshCacheStripState(),
   /** The picker is shown instead of the open session ("‹ Sessions"). */
   picker: true,
 };
@@ -62,6 +72,9 @@ function main(): void {
   const detailPane = byId<HTMLElement>('detail-pane');
   const cacheCanvas = byId<HTMLCanvasElement>('cache-canvas');
   const tooltip = byId<HTMLElement>('tooltip');
+  // The glass panel's backdrop filter makes it a containing block for fixed
+  // descendants. Keep the shared tooltip at viewport level instead.
+  document.body.append(tooltip);
   const zoomOut = byId<HTMLButtonElement>('zoom-out');
   const breadcrumb = byId<HTMLElement>('breadcrumb');
   const spanCount = byId<HTMLElement>('span-count');
@@ -83,6 +96,14 @@ function main(): void {
 
   trace.onSelect = (span) => renderDetailFor(span);
   trace.onZoom = (span) => zoomTo(span);
+
+  // Cache strip interactions: hover shows a bounded plain-text preview via the
+  // shared tooltip (textContent only, like TraceView); click selects the exact
+  // call under the bar. Bars are rebound on every render, so stale events can
+  // never select; leaving the strip always hides the tooltip.
+  cacheCanvas.addEventListener('pointermove', onCacheHover);
+  cacheCanvas.addEventListener('pointerleave', hideCacheTooltip);
+  cacheCanvas.addEventListener('click', onCacheClick);
   trace.onRows = (n) => {
     spanCount.textContent = `${n.toLocaleString()} span${n === 1 ? '' : 's'}`;
   };
@@ -431,11 +452,55 @@ function main(): void {
     indexPanel.hidden = !(onTrace && !showTrace);
   }
 
+  /** Hover: bounded plain-text preview of the exact call under the cursor. */
+  function onCacheHover(e: MouseEvent): void {
+    const span = cacheSpanAt(state.cacheStrip, e.offsetX);
+    if (span === null) {
+      hideCacheTooltip();
+      return;
+    }
+    tooltip.textContent = cacheTooltipText(span);
+    tooltip.hidden = false;
+    positionTooltip(e);
+  }
+
+  /** Cursor-anchored placement, flipped at the viewport edges (TraceView pattern). */
+  function positionTooltip(e: MouseEvent): void {
+    const pad = 14;
+    const w = tooltip.offsetWidth;
+    const h = tooltip.offsetHeight;
+    let x = e.clientX + pad;
+    let y = e.clientY + pad;
+    if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+    if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+    tooltip.style.left = `${Math.max(4, Math.min(x, window.innerWidth - w - 4))}px`;
+    tooltip.style.top = `${Math.max(4, Math.min(y, window.innerHeight - h - 4))}px`;
+  }
+
+  function hideCacheTooltip(): void {
+    tooltip.hidden = true;
+  }
+
+  /** Click: select the exact call — collapsed ancestors expand, the row
+   *  scrolls into view, the detail pane updates; the zoom window is untouched. */
+  function onCacheClick(e: MouseEvent): void {
+    const span = cacheSpanAt(state.cacheStrip, e.offsetX);
+    if (span === null) return;
+    hideCacheTooltip();
+    trace.select(span, { scroll: true });
+  }
+
   /** `newTree` = a different session or zoom root: rebuild rows and clear selection. */
   function render(newTree: boolean): void {
     const loaded = current();
     syncTraceScreens();
-    if (loaded === undefined || app.hidden) return;
+    if (loaded === undefined || app.hidden) {
+      // Nothing is painted (no session, or not on the trace page): the strip
+      // must keep neither hit geometry nor a hover tooltip from before.
+      bindCacheStrip(state.cacheStrip, [], 0);
+      hideCacheTooltip();
+      return;
+    }
     const sessionRoot = loaded.session.root;
     const root = state.zoomNode ?? sessionRoot;
 
@@ -451,7 +516,17 @@ function main(): void {
     trace.setWindow(state.t0, state.t1);
 
     sizeCanvas(cacheCanvas);
-    drawCacheTrace(cacheCanvas, collectCacheBars(root, state.t0, state.t1), state.t0, state.t1);
+    const bars = collectCacheBars(root, state.t0, state.t1);
+    drawCacheTrace(cacheCanvas, bars, state.t0, state.t1);
+    // Rebind hit-test geometry on every paint (covers resize, zoom and session
+    // changes) and drop any hover tooltip left over from the previous content.
+    bindCacheStrip(
+      state.cacheStrip,
+      bars,
+      cacheCanvas.getBoundingClientRect().width || cacheCanvas.width,
+      cacheCanvas.width / (cacheCanvas.getBoundingClientRect().width || cacheCanvas.width),
+    );
+    hideCacheTooltip();
 
     renderSummary(byId<HTMLElement>('summary-panel'), loaded.session, summarize(sessionRoot));
     renderCrumbs(loaded);
@@ -529,6 +604,8 @@ function main(): void {
   navSettings.replaceChildren(icon('settings', 16));
 
   function showPage(page: Page): void {
+    bindCacheStrip(state.cacheStrip, [], 0);
+    hideCacheTooltip();
     if (activity.page === 'activity' && page !== 'activity') {
       activity.harnessOpen = false;
       cleanupActivityView();
@@ -734,6 +811,8 @@ function main(): void {
   });
   let resizeTimer = 0;
   window.addEventListener('resize', () => {
+    bindCacheStrip(state.cacheStrip, [], 0);
+    hideCacheTooltip();
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => render(false), 100);
   });
