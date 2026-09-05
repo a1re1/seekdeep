@@ -599,7 +599,11 @@ button.picker-source:disabled { opacity: 0.5; cursor: default; }
   padding: 6px 10px;
   font-size: var(--text-caption);
   box-shadow: var(--shadow-3);
-  max-width: 26rem;
+  max-width: min(26rem, calc(100vw - 8px));
+  max-height: calc(100dvh - 8px);
+  box-sizing: border-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
   color: var(--text-primary);
 }
