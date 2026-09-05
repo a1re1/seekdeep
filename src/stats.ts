@@ -338,7 +338,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
       output: b.output,
       reasoning: b.reasoning,
     };
-    const cost = costOf(usage, b.model, pricing);
+    const cost = costOf(usage, b.model, pricing, b.requests);
     const prompt = b.input + b.cacheRead + b.cacheWrite;
 
     colCost[idx] = (colCost[idx] ?? 0) + cost;
@@ -416,7 +416,7 @@ export function aggregate(buckets: UsageBucket[], pricing: PricingTable, range: 
       output: b.output,
       reasoning: b.reasoning,
     };
-    pCost += costOf(usage, b.model, pricing);
+    pCost += costOf(usage, b.model, pricing, b.requests);
     pRequests += b.requests;
     pPrompt += b.input + b.cacheRead + b.cacheWrite;
     pOutput += b.output;

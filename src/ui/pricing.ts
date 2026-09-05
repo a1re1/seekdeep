@@ -1,7 +1,7 @@
 // Pricing editor: inline-editable grid of model → USD-per-1M-token rates.
 // Edits persist to localStorage (key seekdeep.pricing) and re-apply pricing.
 
-import type { PricingTable } from '../pricing.ts';
+import type { NumericPriceField, PricingTable } from '../pricing.ts';
 import {
   clearPricingOverrides,
   DEFAULT_PRICING,
@@ -9,7 +9,7 @@ import {
 } from '../pricing.ts';
 import { el } from './dom.ts';
 
-const FIELDS: Array<[keyof PricingTable[string], string]> = [
+const FIELDS: Array<[NumericPriceField, string]> = [
   ['input', 'Input'],
   ['cacheRead', 'Cache read'],
   ['cacheWrite5m', 'Cache write 5m'],
@@ -58,7 +58,7 @@ export function renderPricingEditor(
     const next: PricingTable = {};
     for (const input of container.querySelectorAll<HTMLInputElement>('input[data-model]')) {
       const model = input.dataset.model ?? '';
-      const field = input.dataset.field as keyof PricingTable[string];
+      const field = input.dataset.field as NumericPriceField;
       const cur = next[model] ?? { ...table[model]! };
       // An emptied field must not silently become $0 — restore the rate.
       if (input.value.trim() === '') {
