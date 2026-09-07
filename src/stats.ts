@@ -208,19 +208,51 @@ function nextEdge(ms: number, stepMs: number): number {
 }
 
 /**
- * Window for a preset. `48h` uses hourly columns ending at the current
- * hour; `7d`/`30d` use local-calendar daily columns ending tomorrow
+ * A time-range preset selectable in the activity view and session picker.
+ */
+export type RangePreset = '1h' | '3h' | '6h' | '24h' | '48h' | '7d' | '30d' | 'all';
+
+/** Picker/toolbar presets in display order, with their labels. */
+export const RANGE_PRESETS: ReadonlyArray<readonly [RangePreset, string]> = [
+  ['1h', 'Past hour'],
+  ['3h', 'Past 3 hours'],
+  ['6h', 'Past 6 hours'],
+  ['24h', 'Past 24 hours'],
+  ['48h', 'Past 48 hours'],
+  ['7d', 'Past 7 days'],
+  ['30d', 'Past 30 days'],
+  ['all', 'All time'],
+] as const;
+
+/** Hour count for the sub-48h hourly presets, or undefined for the others. */
+const PRESET_HOURS: Partial<Record<RangePreset, number>> = { '1h': 1, '3h': 3, '6h': 6, '24h': 24 };
+
+function presetHours(preset: RangePreset): number | undefined {
+  return PRESET_HOURS[preset];
+}
+
+/**
+ * Window for a preset. The sub-48h presets (`1h`–`24h`) use hourly columns
+ * starting `N` hours before now (floored to the hour) and ending at the
+ * next hour boundary; `48h` keeps its legacy hourly window ending at the
+ * current hour; `7d`/`30d` use local-calendar daily columns ending tomorrow
  * midnight; `all` starts at the earliest bucket's local day (or the last
  * 24 hours when there are no buckets yet).
  */
 export function rangeFor(
-  preset: '48h' | '7d' | '30d' | 'all',
+  preset: RangePreset,
   nowMs: number,
   buckets: UsageBucket[],
 ): Range {
   if (preset === '48h') {
     const endMs = Math.floor(nowMs / HOUR_MS) * HOUR_MS + HOUR_MS;
     return { startMs: endMs - 48 * HOUR_MS, endMs, stepMs: HOUR_MS };
+  }
+  const hours = presetHours(preset);
+  if (hours !== undefined) {
+    const startMs = Math.floor((nowMs - hours * HOUR_MS) / HOUR_MS) * HOUR_MS;
+    const endMs = Math.floor(nowMs / HOUR_MS) * HOUR_MS + HOUR_MS;
+    return { startMs, endMs, stepMs: HOUR_MS };
   }
   if (preset === '7d' || preset === '30d') {
     const days = preset === '7d' ? 7 : 30;
@@ -245,6 +277,21 @@ export function rangeFor(
     endMs: localDayStart(nowMs) + DAY_MS,
     stepMs: DAY_MS,
   };
+}
+
+/**
+ * Inclusive lower bound of a preset's window in ms, or `null` for 'all'
+ * (which has no lower bound). Shared by the picker's time filter.
+ */
+export function presetStartMs(preset: RangePreset, nowMs: number): number | null {
+  if (preset === 'all') return null;
+  const hours = presetHours(preset);
+  if (hours !== undefined) return Math.floor((nowMs - hours * HOUR_MS) / HOUR_MS) * HOUR_MS;
+  // '48h', '7d' and '30d' reuse their exact legacy windows so the picker's
+  // cutoff always equals the aggregation window's lower bound. Note the
+  // legacy 48h window starts at h - 47h (end - 48h), not the naive
+  // floor((now - 48h) / HOUR) * HOUR = h - 48h.
+  return rangeFor(preset, nowMs, []).startMs;
 }
 
 /** Column start timestamps covering the range. */

@@ -6,6 +6,7 @@ import {
   reconcileHarnessSelection,
   toggleHarness,
 } from '../src/ui/activity-view.ts';
+import { RANGE_PRESETS } from '../src/stats.ts';
 
 describe('modelSeries', () => {
   test('gives each model its own per-column values (series is [model][column])', () => {
@@ -109,5 +110,25 @@ describe('reconcileHarnessSelection', () => {
 
   test('no available harnesses means all-selected', () => {
     expect(reconcileHarnessSelection(['gauntlet'], [])).toBeNull();
+  });
+});
+
+describe('activity range presets (toolbar select options)', () => {
+  test('the range select offers the eight presets in display order with the agreed labels', () => {
+    const options: ReadonlyArray<readonly [string, string]> = RANGE_PRESETS.map(([preset, label]) => [preset, label]);
+    expect(options).toEqual([
+      ['1h', 'Past hour'],
+      ['3h', 'Past 3 hours'],
+      ['6h', 'Past 6 hours'],
+      ['24h', 'Past 24 hours'],
+      ['48h', 'Past 48 hours'],
+      ['7d', 'Past 7 days'],
+      ['30d', 'Past 30 days'],
+      ['all', 'All time'],
+    ]);
+  });
+
+  test('the toolbar default preset is among the offered options', () => {
+    expect(RANGE_PRESETS.some(([preset]) => preset === '48h')).toBe(true);
   });
 });

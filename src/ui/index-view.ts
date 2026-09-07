@@ -12,6 +12,8 @@ import type { ProjectGroup, SessionNode } from '../index/link.ts';
 import type { SessionEntry } from '../index/scan.ts';
 import { SOURCES, SOURCE_KINDS } from '../index/fs.ts';
 import type { SourceKind } from '../index/fs.ts';
+import { presetStartMs, RANGE_PRESETS } from '../stats.ts';
+import type { RangePreset } from '../stats.ts';
 
 // ---- model / actions -------------------------------------------------------
 
@@ -52,10 +54,12 @@ const SORTS: Array<[SortKey, string]> = [
 ];
 
 // UI choices that should survive re-renders: the project/source filter, the
-// sort order, and which parents have their drip children expanded.
+// time range, the sort order, and which parents have their drip children
+// expanded.
 const ui = {
   project: null as string | null, // ProjectGroup.root
   source: null as SourceKind | null,
+  range: 'all' as RangePreset,
   sort: 'recent' as SortKey,
 };
 const expandedKids = new Set<string>();
@@ -229,7 +233,9 @@ function mainColumn(model: IndexModel, actions: IndexActions): HTMLElement {
   const q = normalize(model.filter);
   const nodes = collectNodes(model, group).filter((n) => n.self || n.kids.length > 0);
   const sorted = sortNodes(nodes, ui.sort);
-  const total = sorted.reduce((n, item) => n + 1 + item.node.children.length, 0);
+  // Header count reflects the filtered list: parents that survived the range/text/source
+  // filters plus only the children still shown (item.kids), not each node's raw children.
+  const total = sorted.reduce((n, item) => n + 1 + item.kids.length, 0);
 
   const sortSeg = el(
     'nav',
@@ -271,6 +277,7 @@ function mainColumn(model: IndexModel, actions: IndexActions): HTMLElement {
     el('span', { class: 'footnote' }, `${total} session${total === 1 ? '' : 's'}`),
     el('span', { class: 'spacer' }),
     sortSeg,
+    buildRangeSelect(actions),
     filter,
   );
 
@@ -293,6 +300,30 @@ function mainColumn(model: IndexModel, actions: IndexActions): HTMLElement {
   return el('div', { class: 'picker-main' }, head, rows);
 }
 
+// Time-range select for the picker, mirroring the activity toolbar's vt-select.
+// The choice survives re-renders in `ui` and repaints via the usual setFilter rerender.
+function buildRangeSelect(actions: IndexActions): HTMLElement {
+  const select = document.createElement('select');
+  select.id = 'picker-range';
+  select.className = 'vt-select';
+  select.title = 'Time range';
+  for (const [value, label] of RANGE_PRESETS) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  }
+  select.value = ui.range;
+  select.addEventListener('change', () => {
+    ui.range = select.value as RangePreset;
+    rerender(actions);
+  });
+  const wrap = document.createElement('span');
+  wrap.className = 'vt-select-wrap';
+  wrap.append(select, icon('chevron-down', 12));
+  return wrap;
+}
+
 interface Candidate {
   node: SessionNode;
   project: string;
@@ -300,17 +331,19 @@ interface Candidate {
   kids: SessionNode[];
 }
 
-/** Every top-level node under the project filter, with the text filter applied. */
+/** Every top-level node under the project and time-range filters, with the text filter applied. */
 function collectNodes(model: IndexModel, only: ProjectGroup | null): Candidate[] {
   const q = normalize(model.filter);
+  const cutoffMs = rangeCutoffMs(ui.range, Date.now());
   const out: Candidate[] = [];
   const groups = only === null ? model.projects : [only];
   for (const group of groups) {
     for (const wt of group.worktrees) {
       for (const node of wt.sessions) {
+        if (!nodeWithinRange(node, cutoffMs)) continue;
         if (ui.source !== null && node.entry.kind !== ui.source && !node.children.some((c) => c.entry.kind === ui.source)) continue;
         const self = q === '' || entryMatches(node.entry, q, group.label);
-        const kids = node.children.filter((k) => (q === '' || entryMatches(k.entry, q, group.label)) && (ui.source === null || k.entry.kind === ui.source || self));
+        const kids = node.children.filter((k) => (cutoffMs === null || k.entry.startMs >= cutoffMs) && (q === '' || entryMatches(k.entry, q, group.label)) && (ui.source === null || k.entry.kind === ui.source || self));
         out.push({ node, project: group.label, self, kids });
       }
     }
@@ -421,6 +454,28 @@ function keyActivate(fn: () => void): EventListener {
       fn();
     }
   }) as EventListener;
+}
+
+/** Inclusive start-time cutoff for a preset, in ms (null = unbounded, as for 'all'). */
+export function rangeCutoffMs(preset: RangePreset, nowMs: number): number | null {
+  return preset === 'all' ? null : presetStartMs(preset, nowMs);
+}
+
+/** True when a session starts at or after the preset's cutoff ('all' admits everything). */
+export function withinRange(entry: Pick<SessionEntry, 'startMs'>, preset: RangePreset, nowMs: number): boolean {
+  const cutoff = rangeCutoffMs(preset, nowMs);
+  return cutoff === null || entry.startMs >= cutoff;
+}
+
+/** Structural view of a picker node for range checks (SessionNode satisfies it). */
+export interface RangeNode {
+  entry: { startMs: number };
+  children: RangeNode[];
+}
+
+/** Range gate for a picker node: keep it when it or any nested drip child starts in range. */
+export function nodeWithinRange(node: RangeNode, cutoffMs: number | null): boolean {
+  return cutoffMs === null || node.entry.startMs >= cutoffMs || node.children.some((c) => c.entry.startMs >= cutoffMs);
 }
 
 function normalize(s: string): string {
