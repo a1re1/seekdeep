@@ -31,7 +31,7 @@ import { readFiles } from './ui/loader.ts';
 import { renderPricingEditor } from './ui/pricing.ts';
 import { cleanupActivityView, harnessMatches, reconcileHarnessSelection, renderActivity } from './ui/activity-view.ts';
 import { aggregate, bucketSession, mergeBuckets, rangeFor } from './stats.ts';
-import type { UsageBucket } from './stats.ts';
+import type { RangePreset, UsageBucket } from './stats.ts';
 import { renderSummary, summarize } from './ui/summary.ts';
 import { initTheme, toggleTheme, type Theme } from './ui/theme.ts';
 import { TraceView } from './ui/trace.ts';
@@ -85,7 +85,7 @@ function main(): void {
   // Activity page state (declared early: scans and drops invalidate it).
   const activity = {
     page: 'trace' as Page,
-    preset: '48h',
+    preset: '48h' as RangePreset,
     harness: null as string[] | null, // null = every harness (all-selected default)
     harnessOpen: false,
     buckets: null as UsageBucket[] | null, // null until the first collection
@@ -438,9 +438,36 @@ function main(): void {
             },
           },
           loaded.session.title || loaded.fileName,
+          el('span', {
+            class: 'session-tab-close',
+            role: 'button',
+            'aria-label': 'Close session',
+            title: 'Close session',
+            onclick: (e) => {
+              e.stopPropagation();
+              closeSession(i);
+            },
+          }, icon('x', 12)),
         ),
       );
     });
+  }
+
+  /** Close tab i: splice it out, fix the active index, and refresh the trace. */
+  function closeSession(i: number): void {
+    state.sessions.splice(i, 1);
+    if (state.sessions.length === 0) {
+      state.active = -1;
+      state.zoomNode = null;
+      state.picker = true; // same screen the "‹ Sessions" breadcrumb shows
+      syncTraceScreens();
+      return;
+    }
+    if (i === state.active) state.active = Math.max(0, i - 1);
+    else if (i < state.active) state.active -= 1;
+    state.zoomNode = null;
+    renderTabs();
+    render(true);
   }
 
   // ---- rendering ----------------------------------------------------------
@@ -671,7 +698,7 @@ function main(): void {
     if (activity.page !== 'activity') return;
     const { entries, extra } = activitySources();
     const nothing = entries.length === 0 && extra.length === 0;
-    const preset = activity.preset as '48h' | '7d' | '30d' | 'all';
+    const preset = activity.preset;
     const all = activity.buckets;
     const harnesses = all === null ? [] : [...new Set(all.map((b) => b.harness ?? 'other'))].sort();
     if (all !== null) activity.harness = reconcileHarnessSelection(activity.harness, harnesses);

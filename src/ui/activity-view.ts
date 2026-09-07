@@ -2,7 +2,8 @@
 // per-model usage table. Pure rendering — the caller (main.ts) owns the
 // aggregation and hands in an Activity plus callbacks for range/rescan.
 
-import type { Activity } from '../stats.ts';
+import type { Activity, RangePreset } from '../stats.ts';
+import { RANGE_PRESETS } from '../stats.ts';
 import { formatCount, formatCost, formatPct } from './format.ts';
 import { icon } from './icons.ts';
 
@@ -12,7 +13,7 @@ export interface ActivityModel {
   progress: string | null;
   /** Transcript paths the last collection could not read; the totals omit them. */
   skipped: string[];
-  preset: string;
+  preset: RangePreset;
   /** Harnesses present in the data (claude, drip, …); the filter offers these plus an All option. */
   harnesses: string[];
   /** Selected harnesses, or null for every harness. */
@@ -24,7 +25,7 @@ export interface ActivityModel {
 }
 
 export interface ActivityActions {
-  onRange(preset: string): void;
+  onRange(preset: RangePreset): void;
   onHarness(harness: string[] | null): void;
   onHarnessOpen(open: boolean): void;
   onRescan(): void;
@@ -78,19 +79,14 @@ function buildToolbar(model: ActivityModel, actions: ActivityActions): HTMLEleme
   const select = document.createElement('select');
   select.id = 'activity-range';
   select.className = 'vt-select';
-  for (const [value, label] of [
-    ['48h', 'Past 48 hours'],
-    ['7d', 'Past 7 days'],
-    ['30d', 'Past 30 days'],
-    ['all', 'All time'],
-  ] as const) {
+  for (const [value, label] of RANGE_PRESETS) {
     const option = document.createElement('option');
     option.value = value;
     option.textContent = label;
     select.append(option);
   }
   select.value = model.preset;
-  select.addEventListener('change', () => actions.onRange(select.value));
+  select.addEventListener('change', () => actions.onRange(select.value as RangePreset));
   select.disabled = model.progress !== null;
   const selectWrap = document.createElement('span');
   selectWrap.className = 'vt-select-wrap';

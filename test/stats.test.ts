@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { Session, Span } from '../src/model.ts';
 import { DEFAULT_PRICING } from '../src/pricing.ts';
 import { makeRoot, makeSpan } from '../src/parsers/util.ts';
-import { aggregate, bucketSession, mergeBuckets, rangeFor } from '../src/stats.ts';
-import type { UsageBucket } from '../src/stats.ts';
+import { aggregate, bucketSession, mergeBuckets, presetStartMs, rangeFor, RANGE_PRESETS } from '../src/stats.ts';
+import type { RangePreset, UsageBucket } from '../src/stats.ts';
 
 const HOUR = 3_600_000;
 const NOW = Date.parse('2026-09-01T15:30:00Z');
@@ -22,6 +22,63 @@ function session(spans: Span[]): Session {
 function bucket(hourMs: number, model: string, over: Partial<UsageBucket> = {}): UsageBucket {
   return { hourMs, model, requests: 1, input: 0, cacheRead: 0, cacheWrite: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0, reasoning: 0, latencyMs: 0, ...over };
 }
+
+describe('range presets', () => {
+  test('exposes the eight presets in display order with the agreed labels', () => {
+    expect(RANGE_PRESETS).toEqual([
+      ['1h', 'Past hour'],
+      ['3h', 'Past 3 hours'],
+      ['6h', 'Past 6 hours'],
+      ['24h', 'Past 24 hours'],
+      ['48h', 'Past 48 hours'],
+      ['7d', 'Past 7 days'],
+      ['30d', 'Past 30 days'],
+      ['all', 'All time'],
+    ]);
+  });
+
+  test('sub-48h presets use hourly buckets with a floored, inclusive start', () => {
+    // NOW = 2026-09-01T15:30:00Z is not hour-aligned on purpose.
+    const h = Math.floor(NOW / HOUR) * HOUR;
+    for (const [preset, hours] of [['1h', 1], ['3h', 3], ['6h', 6], ['24h', 24]] as const) {
+      const r = rangeFor(preset as RangePreset, NOW, []);
+      expect(r.stepMs).toBe(HOUR);
+      expect(r.startMs).toBe(Math.floor((NOW - hours * HOUR) / HOUR) * HOUR);
+      expect(r.startMs % HOUR).toBe(0); // floored to the hour
+      expect(r.endMs).toBe(h + HOUR); // next hour boundary after now
+      expect(r.startMs).toBeLessThanOrEqual(NOW);
+      // Inclusive lower bound matches the window start.
+      expect(presetStartMs(preset as RangePreset, NOW)).toBe(r.startMs);
+      // Every expected hour column is covered.
+      const cols = Math.round((r.endMs - r.startMs) / HOUR);
+      expect(cols).toBe(hours + 1);
+    }
+  });
+
+  test('presetStartMs is null for all and matches every window start', () => {
+    expect(presetStartMs('all', NOW)).toBeNull();
+    // The legacy 48h window is [h - 47h, h + 1h), NOT the naive
+    // floor((now - 48h) / HOUR) * HOUR = h - 48h.
+    const h = Math.floor(NOW / HOUR) * HOUR;
+    expect(presetStartMs('48h', NOW)).toBe(h - 47 * HOUR);
+    // Every preset's cutoff must equal its actual aggregation window start.
+    for (const [preset] of RANGE_PRESETS) {
+      if (preset === 'all') continue;
+      expect(presetStartMs(preset, NOW)).toBe(rangeFor(preset, NOW, []).startMs);
+    }
+  });
+
+  test('48h/7d/30d/all keep their legacy windows', () => {
+    const h = Math.floor(NOW / HOUR) * HOUR;
+    expect(rangeFor('48h', NOW, [])).toEqual({ startMs: h - 47 * HOUR, endMs: h + HOUR, stepMs: HOUR });
+    const d = new Date(NOW);
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    expect(rangeFor('7d', NOW, [])).toEqual({ startMs: day - 6 * 24 * HOUR, endMs: day + 24 * HOUR, stepMs: 24 * HOUR });
+    expect(rangeFor('30d', NOW, [])).toEqual({ startMs: day - 29 * 24 * HOUR, endMs: day + 24 * HOUR, stepMs: 24 * HOUR });
+    expect(rangeFor('all', NOW, [bucket(h - 100 * HOUR, 'claude-opus-5')])).toEqual({ startMs: day - 4 * 24 * HOUR, endMs: day + 24 * HOUR, stepMs: 24 * HOUR });
+    expect(rangeFor('all', NOW, [])).toEqual({ startMs: h - 23 * HOUR, endMs: h + HOUR, stepMs: HOUR });
+  });
+});
 
 describe('bucketSession', () => {
   test('sums usage per (UTC hour, model) and counts requests', () => {
