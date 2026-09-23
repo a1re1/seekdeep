@@ -763,18 +763,25 @@ body.focus .content { padding: 8px; }
 .settings-title { font-weight: var(--weight-semibold); }
 .pricing-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(5, 110px);
+  /* model · five rate columns · remove */
+  grid-template-columns: minmax(0, 1fr) repeat(5, 110px) 24px;
   gap: 6px 12px;
   padding: 0 14px 14px;
   align-items: center;
   font-variant-numeric: tabular-nums;
 }
 .pricing-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.pricing-name { padding: 0 8px; }
+.pricing-name input { font-family: var(--font-mono); font-size: var(--text-footnote); }
+.pricing-remove { display: flex; align-items: center; justify-content: center; }
+.pricing-remove button { color: var(--text-tertiary); }
+.pricing-remove button:hover { color: var(--red); }
+.pricing-status { margin: 0; padding: 0 14px 12px; min-height: 1em; }
 .pricing-input { width: 110px; padding: 0 8px; }
 .pricing-input input { font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
 .pricing-input input::-webkit-outer-spin-button, .pricing-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 @media (max-width: 800px) {
-  .pricing-grid { grid-template-columns: minmax(0, 1fr) repeat(5, 80px); }
+  .pricing-grid { grid-template-columns: minmax(0, 1fr) repeat(5, 80px) 24px; }
   .pricing-input { width: 80px; }
 }
 

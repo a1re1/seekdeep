@@ -33,3 +33,18 @@ test('bun run build emits a relocatable static site', async () => {
     rmSync(out, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('the shipped bundle carries the add-a-model UI on the pricing grid', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'seekdeep-build-'));
+  try {
+    const proc = Bun.spawn(['bun', 'run', 'scripts/build.ts'], { cwd: root, env: { ...process.env, SEEKDEEP_OUTDIR: out }, stdout: 'pipe', stderr: 'pipe' });
+    expect(await proc.exited).toBe(0);
+    const js = readFileSync(join(out, 'main.js'), 'utf8');
+    // Blank rows render a name field plus rate inputs, and custom rows a remove button.
+    expect(js).toContain('data-row-name');
+    expect(js).toContain('model-name');
+    expect(js).toContain('data-remove');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}, 60_000);

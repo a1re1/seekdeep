@@ -29,7 +29,7 @@ render happen entirely in your browser.
   write vs. uncached input — so the exact call where the prefix went cold
   is obvious.
 - **Cost breakdown**: estimated spend per turn, per tool, per model, computed
-  from a pricing table you can edit in the UI.
+  from a pricing table you can edit and extend in the UI.
 - **Session summary**: total wall time, model time vs. tool time vs. idle,
   token totals, hit rate, cost, slowest spans, most-called tools.
 
@@ -80,8 +80,12 @@ bun run test
   raw JSONL records to a common `Span` tree (`src/model.ts`). The renderer
   never sees format-specific fields, so adding a new agent tool is one file.
 - **Costs are estimates.** Pricing comes from `src/pricing.ts` (per-model
-  input / output / cache-read / cache-write rates). Edit it in the UI if your
-  rates differ; the table is stored in `localStorage`. A row may also carry a
+  input / output / cache-read / cache-write rates; DeepSeek's `deepseek-flash`
+  and `deepseek-v4-pro` carry peak rates — off-peak bills half, which is not
+  modelled, so those estimates read high). Edit any rate in the UI, or type a
+  model name and its five rates into one of the blank rows at the bottom of the
+  table to price a model the table does not know; the table is stored in
+  `localStorage`. A row may also carry a
   `longContext` tier that reprices a whole request once its prompt passes a
   threshold (GPT-6 Astra: 2x input, 1.5x output past 272K); tiers are not
   editable in the UI. On the activity page, where usage is already summed into

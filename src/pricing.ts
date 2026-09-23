@@ -50,6 +50,15 @@ const openaiRow = (input: number, output: number): PriceRow => ({
 // Generic "cheap provider" rows: same read-discount convention, no writes.
 const otherRow = (input: number, output: number): PriceRow => openaiRow(input, output);
 
+// DeepSeek-style: cache reads are deeply discounted and cache writes are free.
+const deepseekRow = (input: number, output: number, cacheRead: number): PriceRow => ({
+  input,
+  output,
+  cacheRead,
+  cacheWrite5m: 0,
+  cacheWrite1h: 0,
+});
+
 export const DEFAULT_PRICING: PricingTable = {
   // Anthropic
   'claude-fable-5': anthropicRow(10, 50),
@@ -88,6 +97,20 @@ export const DEFAULT_PRICING: PricingTable = {
   'glm-5-3-flash': otherRow(0.07, 0.4),
   'kimi-k3': otherRow(0.6, 2.5),
   'gpt-oss-120b': otherRow(0.15, 0.6),
+  // DeepSeek, at the peak rates on the DeepSeek pricing page (per 1M tokens):
+  // deepseek-flash (1M context, no long-context tier) is $0.30 in / $1.20 out
+  // with cached input at $0.006, and deepseek-v4-pro is $1.32 in / $3.96 out
+  // with cached input at $0.044. Off-peak hours bill at *half* these rates and
+  // a single rate cannot switch in and out of peak, so these estimates read
+  // high for work done outside the peak window. Neither model charges for
+  // cache writes. The retired `deepseek-v4-flash` name is served by
+  // V4.1-Flash at the Flash price, so its alias row is accurate; `.` and `-`
+  // are equivalent (deepseek-v4.1-flash ≡ deepseek-v4-1-flash).
+  'deepseek-flash': deepseekRow(0.3, 1.2, 0.006),
+  'deepseek-v4.1-flash': deepseekRow(0.3, 1.2, 0.006),
+  'deepseek-v4-flash': deepseekRow(0.3, 1.2, 0.006),
+  'deepseek-v4-pro': deepseekRow(1.32, 3.96, 0.044),
+  'deepseek-v4.1-pro': deepseekRow(1.32, 3.96, 0.044),
 };
 
 /** `.` and `-` are equivalent in table keys and model names (glm-5.3-flash ≡ glm-5-3-flash). */
@@ -262,14 +285,42 @@ export function clearPricingOverrides(): void {
   }
 }
 
-/** DEFAULT_PRICING merged with the stored overrides (replaces whole rows). */
-export function effectivePricing(): PricingTable {
-  const overrides = loadPricingOverrides();
+/** Every rate a PriceRow must carry — the fields the settings grid edits. */
+export const PRICE_FIELDS: NumericPriceField[] = [
+  'input',
+  'cacheRead',
+  'cacheWrite5m',
+  'cacheWrite1h',
+  'output',
+];
+
+/** True when `patch` carries every rate field, i.e. it describes a whole row. */
+export function isCompleteRow(patch: Partial<PriceRow> | undefined): boolean {
+  return patch !== undefined && PRICE_FIELDS.every((field) => typeof patch[field] === 'number');
+}
+
+/**
+ * `DEFAULT_PRICING` merged with `overrides`. A patch over a known model
+ * replaces only the fields it carries, so an edited rate keeps the row's
+ * `longContext` tier and any rate the user left alone. A *complete* patch for
+ * a model the table does not know is a user-added row and becomes a new model;
+ * an incomplete one is ignored (no base to patch).
+ */
+export function mergePricing(overrides: PricingOverrides): PricingTable {
   const table: PricingTable = { ...DEFAULT_PRICING };
   for (const [key, patch] of Object.entries(overrides)) {
+    if (patch === undefined) continue;
     const base = table[key];
-    if (base === undefined) continue;
-    table[key] = { ...base, ...(patch as Partial<PriceRow>) };
+    if (base === undefined) {
+      if (isCompleteRow(patch)) table[key] = patch as PriceRow;
+      continue;
+    }
+    table[key] = { ...base, ...patch };
   }
   return table;
+}
+
+/** DEFAULT_PRICING merged with the stored overrides (see `mergePricing`). */
+export function effectivePricing(): PricingTable {
+  return mergePricing(loadPricingOverrides());
 }
