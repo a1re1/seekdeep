@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_PRICING, applyPricing, costOf, priceFor } from '../src/pricing.ts';
+import { DEFAULT_PRICING, PRICE_FIELDS, applyPricing, costOf, mergePricing, priceFor } from '../src/pricing.ts';
 import { parseTranscript } from '../src/parsers/index.ts';
 import { flatten, type Usage } from '../src/model.ts';
 
@@ -106,5 +106,67 @@ describe('applyPricing', () => {
     applyPricing(drip, DEFAULT_PRICING);
     expect(flatten(drip.root).filter((x) => x.kind === 'model').map((m) => m.costUsd)).toEqual([0, 0]);
     expect(drip.warnings.filter((w) => w === 'no pricing for mystery-9')).toHaveLength(1);
+  });
+});
+
+describe('deepseek rows', () => {
+  test('deepseek-flash carries peak rates and every flash alias resolves to it', () => {
+    const flash = DEFAULT_PRICING['deepseek-flash']!;
+    expect(flash.input).toBeCloseTo(0.3, 9);
+    expect(flash.output).toBeCloseTo(1.2, 9);
+    expect(flash.cacheRead).toBeCloseTo(0.006, 9);
+    expect(flash.cacheWrite5m).toBe(0);
+    expect(flash.cacheWrite1h).toBe(0);
+    expect(flash.longContext).toBeUndefined(); // flat rate across the 1M context
+    expect(priceFor('deepseek-flash')).toEqual(flash);
+    expect(priceFor('deepseek-v4.1-flash')).toEqual(flash);
+    expect(priceFor('deepseek-v4-flash')).toEqual(flash); // retired name, billed as Flash
+    expect(priceFor('deepseek/deepseek-flash')).toEqual(flash);
+    expect(priceFor('deepseek-v4-flash-20260601')).toEqual(flash);
+  });
+  test('deepseek-v4-pro carries peak rates under both spellings', () => {
+    const pro = DEFAULT_PRICING['deepseek-v4-pro']!;
+    expect(pro.input).toBeCloseTo(1.32, 9);
+    expect(pro.output).toBeCloseTo(3.96, 9);
+    expect(pro.cacheRead).toBeCloseTo(0.044, 9);
+    expect(priceFor('deepseek-v4.1-pro')).toEqual(pro);
+    expect(priceFor('deepseek-v4-pro-0813')).toEqual(pro);
+  });
+  test('a Flash request bills at peak-rate arithmetic ($0.30 in / $1.20 out)', () => {
+    expect(costOf(u({ input: M, output: M }), 'deepseek-flash')).toBeCloseTo(1.5, 9);
+    expect(costOf(u({ cacheRead: M }), 'deepseek-flash')).toBeCloseTo(0.006, 9);
+    expect(costOf(u({ cacheWrite: M }), 'deepseek-flash')).toBeCloseTo(0, 9);
+  });
+});
+
+describe('user-added pricing rows', () => {
+  const customRow = { input: 1, cacheRead: 0.1, cacheWrite5m: 0.5, cacheWrite1h: 1, output: 2 };
+  test('a complete row for an unknown model becomes a new model', () => {
+    const merged = mergePricing({ 'my-flash': customRow });
+    expect(merged['my-flash']).toEqual(customRow);
+    expect(priceFor('my-flash', merged)).toEqual(customRow);
+    expect(priceFor('vendor/my-flash-20270101', merged)).toEqual(customRow); // prefix + provider strip
+    expect(costOf(u({ input: M, output: M }), 'my-flash', merged)).toBeCloseTo(3, 9);
+    expect(priceFor('my-flash', DEFAULT_PRICING)).toBeNull(); // only in the merged table
+  });
+  test('an incomplete patch for an unknown model is ignored', () => {
+    expect(mergePricing({ ghost: { input: 9 } })['ghost']).toBeUndefined();
+    expect(mergePricing({ ghost: undefined as never })['ghost']).toBeUndefined();
+  });
+  test('a partial edit keeps every rate it does not name, longContext included', () => {
+    const merged = mergePricing({ 'gpt-6-astra': { output: 60 }, 'gpt-5': { input: 9 } });
+    expect(merged['gpt-6-astra']!.output).toBe(60);
+    expect(merged['gpt-6-astra']!.input).toBe(10);
+    expect(merged['gpt-6-astra']!.cacheWrite5m).toBe(12.5);
+    expect(merged['gpt-6-astra']!.longContext).toEqual(DEFAULT_PRICING['gpt-6-astra']!.longContext);
+    expect(merged['gpt-5']!.input).toBe(9);
+    expect(merged['gpt-5']!.output).toBe(DEFAULT_PRICING['gpt-5']!.output);
+  });
+});
+
+describe('pricing editor', () => {
+  test('the grid edits exactly the rate fields every row must carry', async () => {
+    const { PRICE_EDITOR_FIELDS } = await import('../src/ui/pricing.ts');
+    expect(PRICE_EDITOR_FIELDS.map(([field]) => field).sort()).toEqual([...PRICE_FIELDS].sort());
   });
 });

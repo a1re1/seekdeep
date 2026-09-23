@@ -12,6 +12,7 @@ export type IconName =
   | 'search'
   | 'settings'
   | 'sun'
+  | 'trash'
   | 'x';
 
 const PATHS: Record<IconName, string[]> = {
@@ -29,6 +30,10 @@ const PATHS: Record<IconName, string[]> = {
     'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
     'M12 2v2', 'M12 20v2', 'm4.93 4.93 1.41 1.41', 'm17.66 17.66 1.41 1.41',
     'M2 12h2', 'M20 12h2', 'm6.34 17.66-1.41 1.41', 'm19.07 4.93-1.41 1.41',
+  ],
+  trash: [
+    'M3 6h18', 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
+    'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6', 'M10 11v6', 'M14 11v6',
   ],
   x: ['M18 6 6 18', 'm6 6 12 12'],
 };
