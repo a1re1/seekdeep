@@ -2,9 +2,11 @@
 // per-model usage table. Pure rendering — the caller (main.ts) owns the
 // aggregation and hands in an Activity plus callbacks for range/rescan.
 
-import type { Activity, RangePreset } from '../stats.ts';
+import type { Activity, Range as ActivityRange, RangePreset, UsageBucket } from '../stats.ts';
 import { RANGE_PRESETS } from '../stats.ts';
-import { formatCount, formatCost, formatPct } from './format.ts';
+import { costOf } from '../pricing.ts';
+import type { PricingTable } from '../pricing.ts';
+import { formatCount, formatCost, formatDuration, formatPct } from './format.ts';
 import { icon } from './icons.ts';
 
 export interface ActivityModel {
@@ -22,6 +24,10 @@ export interface ActivityModel {
   harnessOpen: boolean;
   /** Shown instead of the dashboard when there is nothing to aggregate. */
   empty: string | null;
+  /** Harness-filtered buckets, carrying session identity/duration for the new panels. */
+  sessionBuckets: UsageBucket[];
+  /** Pricing table the session panels price bucket spend with. */
+  pricing: PricingTable;
 }
 
 export interface ActivityActions {
@@ -29,6 +35,8 @@ export interface ActivityActions {
   onHarness(harness: string[] | null): void;
   onHarnessOpen(open: boolean): void;
   onRescan(): void;
+  /** Drill into one session segment; carries that session's stable id. */
+  onOpenSession(sessionId: string): void;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -70,7 +78,7 @@ export function renderActivity(host: HTMLElement, model: ActivityModel, actions:
     host.append(note);
     return;
   }
-  host.append(buildCards(model.activity), buildCharts(model.activity), buildTable(model.activity));
+  host.append(buildCards(model.activity), buildCharts(model.activity, model, actions), buildTable(model.activity));
 }
 
 // ---- toolbar ---------------------------------------------------------------
@@ -336,7 +344,7 @@ interface ChartSpec {
   series: Array<{ key: string; name: string; color: string; values: number[] }>;
 }
 
-function buildCharts(activity: Activity | null): HTMLElement {
+function buildCharts(activity: Activity | null, model: ActivityModel, actions: ActivityActions): HTMLElement {
   const grid = document.createElement('div');
   grid.className = 'chart-grid';
   if (activity === null) return grid;
@@ -406,8 +414,130 @@ function buildCharts(activity: Activity | null): HTMLElement {
       { format: formatCost, tooltip: tip },
     ),
   );
-  grid.append(spend);
+  grid.append(spend, sessionSpendPanel(activity, model, actions, tip), sessionDurationPanel(activity, model));
   return grid;
+}
+
+/**
+ * Spend by session: one stacked column per range column (the SAME columns
+ * aggregate() produced), one segment per session present in that bucket,
+ * priced with the buckets' own table so a column's segments sum back to it.
+ * Every segment drills into its session (click, Enter or Space).
+ */
+function sessionSpendPanel(
+  activity: Activity,
+  model: ActivityModel,
+  actions: ActivityActions,
+  tip: ChartTooltip,
+): HTMLElement {
+  const panel = document.createElement('div');
+  panel.className = 'card chart-panel';
+  const h = document.createElement('h3');
+  h.textContent = 'Spend by session';
+  const stack = sessionSpendStack(activity.columns, model.sessionBuckets, (b) => bucketSpend(b, model.pricing), activity.range);
+  const series = stack.sessions.map((id, row) => ({
+    key: id,
+    name: sessionLabel(id),
+    color: sessionColorFor(id, PALETTE),
+    values: stack.values[row] ?? [],
+  }));
+  const svg = stackedBars(activity.columns, series, {
+    unit: '$',
+    format: formatCost,
+    tooltip: tip,
+    activatable: {
+      label: (key, col) => {
+        const s = series.find((x) => x.key === key);
+        return `${s?.name ?? key} · ${formatCost(s?.values[col] ?? 0)} · ${axisLabel(activity.columns, col)}`;
+      },
+      activate: (key) => actions.onOpenSession(key),
+    },
+  });
+  panel.append(h, svg, legendRow(series));
+  return panel;
+}
+
+/**
+ * Average session duration: the mean ELAPSED time of the sessions that STARTED
+ * in each column (first span start .. last span end, idle gaps included) — an
+ * explicit elapsed-time proxy, never a claim about PR completion. Columns with
+ * no measurable session show an en dash rather than a zero bar.
+ */
+function sessionDurationPanel(activity: Activity, model: ActivityModel): HTMLElement {
+  const panel = document.createElement('div');
+  panel.className = 'card chart-panel';
+  const h = document.createElement('h3');
+  h.textContent = 'Average session duration';
+  const cohorts = durationCohorts(activity.columns, model.sessionBuckets, activity.range);
+  const headline = document.createElement('div');
+  headline.className = 'chart-headline';
+  headline.textContent = cohorts.overallMs === null
+    ? 'Overall mean: no measurable sessions in this range'
+    : `Overall mean (${formatCount(cohorts.counted)} session${cohorts.counted === 1 ? '' : 's'}): ${formatDuration(cohorts.overallMs)}`;
+  const sub = document.createElement('p');
+  sub.className = 'footnote chart-sub';
+  sub.textContent =
+    'Mean elapsed time (first span start to last span end, idle gaps included) of the sessions that STARTED in each column. Only sessions whose start falls inside the selected range are counted. This is a wall-clock proxy measured from the transcripts: a session left open shows the whole gap, and time after its last recorded activity is not counted — it is not time to a merged PR.'
+    + (cohorts.excluded > 0
+      ? ` ${formatCount(cohorts.excluded)} session${cohorts.excluded === 1 ? '' : 's'} excluded for having no measurable duration.`
+      : '');
+  panel.append(h, headline, sub, durationBars(activity.columns, cohorts.perColumn));
+  return panel;
+}
+
+/** One bar per column's mean duration; a column with no measurable session shows an en dash. */
+function durationBars(columns: number[], perColumn: Array<number | null>): SVGElement {
+  const W = 640;
+  const H = 170;
+  const M = { top: 16, right: 8, bottom: 20, left: 48 };
+  const svg = svgEl('svg', { class: 'chart', viewBox: `0 0 ${W} ${H}`, width: '100%' });
+  if (columns.length === 0) return svg;
+  const plotH = H - M.top - M.bottom;
+  const plotW = W - M.left - M.right;
+  const slot = plotW / Math.max(columns.length, 1);
+  const barW = Math.max(1, Math.min(slot * 0.8, 40));
+  const max = Math.max(...perColumn.map((v) => v ?? 0), 0) || 1;
+  for (const t of niceTicks(max)) {
+    const y = H - M.bottom - (t / max) * plotH;
+    svg.append(svgEl('line', { x1: M.left, x2: W - M.right, y1: y, y2: y, class: 'chart-gridline' }));
+    const label = svgEl('text', { x: M.left - 6, y: y + 4, class: 'chart-label', 'text-anchor': 'end' });
+    label.textContent = formatTick(t, max, '');
+    svg.append(label);
+  }
+  const step = Math.max(1, Math.ceil(columns.length / 7));
+  for (let i = 0; i < columns.length; i += step) {
+    const label = svgEl('text', {
+      x: M.left + i * slot + slot / 2,
+      y: H - M.bottom + 14,
+      class: 'chart-label',
+      'text-anchor': 'middle',
+    });
+    label.textContent = axisLabel(columns, i);
+    svg.append(label);
+  }
+  columns.forEach((_, i) => {
+    const v = perColumn[i];
+    const x = M.left + i * slot + (slot - barW) / 2;
+    if (v === null || v === undefined || !(v > 0)) {
+      // No measurable session started here: an explicit marker, never a zero bar.
+      const mark = svgEl('text', { x: x + barW / 2, y: H - M.bottom - 4, class: 'chart-label', 'text-anchor': 'middle' });
+      mark.textContent = '–';
+      svg.append(mark);
+      return;
+    }
+    const h = (v / max) * plotH;
+    const rect = svgEl('rect', {
+      x,
+      y: H - M.bottom - h,
+      width: barW,
+      height: Math.max(h, 0.5),
+      rx: 2,
+      'aria-label': `${axisLabel(columns, i)} · mean ${formatDuration(v)}`,
+    });
+    (rect as SVGElement & { style: CSSStyleDeclaration }).style.fill = 'var(--accent)';
+    svg.append(rect);
+  });
+  return svg;
 }
 
 // ---- hover tooltip -------------------------------------------------------------
@@ -522,7 +652,13 @@ export function modelSeries(
 export function stackedBars(
   columns: number[],
   seriesByKey: Array<{ key: string; name: string; color: string; values: number[] }>,
-  opts: { unit?: string; format?: (v: number) => string; tooltip?: ChartTooltip } = {},
+  opts: {
+    unit?: string;
+    format?: (v: number) => string;
+    tooltip?: ChartTooltip;
+    /** When set, every segment also becomes a clickable, keyboard-reachable button. */
+    activatable?: { label: (seriesKey: string, column: number) => string; activate: (seriesKey: string, column: number) => void };
+  } = {},
 ): SVGElement {
   const format = opts.format ?? formatCount;
   const W = 640;
@@ -575,6 +711,20 @@ export function stackedBars(
       });
       (rect as SVGElement & { style: CSSStyleDeclaration }).style.fill = s.color;
       rect.setAttribute('aria-label', `${axisLabel(columns, i)} · ${s.name}: ${format(v)}`);
+      const act = opts.activatable;
+      if (act !== undefined) {
+        rect.setAttribute('tabindex', '0');
+        rect.setAttribute('role', 'button');
+        rect.setAttribute('aria-label', act.label(s.key, i));
+        rect.addEventListener('click', () => act.activate(s.key, i));
+        rect.addEventListener('keydown', (e) => {
+          const key = (e as KeyboardEvent).key;
+          if (key === 'Enter' || key === ' ') {
+            e.preventDefault();
+            act.activate(s.key, i);
+          }
+        });
+      }
       attachHover(
         rect,
         () => [
@@ -698,4 +848,185 @@ function buildTable(activity: Activity | null): HTMLElement {
 function formatLatency(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '–';
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`;
+}
+
+// ---- session drill-down: pure helpers --------------------------------------
+// Session spend stacking and duration cohorts are pure over buckets so tests can
+// call them directly; the renderer only wires them to the existing charts.
+
+/**
+ * Column index of `ts` in `columns` (the range's columns from aggregate()):
+ * an exact match when there is one, otherwise the latest column at or before
+ * it, and -1 when the timestamp precedes the whole window.
+ */
+export function columnFor(columns: number[], ts: number): number {
+  let found = -1;
+  for (let i = 0; i < columns.length; i += 1) {
+    const c = columns[i];
+    if (c === undefined) continue;
+    if (c <= ts) found = i;
+    else break;
+  }
+  return found;
+}
+
+/**
+ * Stable colour for a session, drawn from the same palette the model series
+ * use: the same session id always maps to the same swatch, in every column.
+ */
+export function sessionColorFor(sessionId: string, palette: readonly string[]): string {
+  if (palette.length === 0) return 'currentColor';
+  let h = 0;
+  for (let i = 0; i < sessionId.length; i += 1) h = (h * 31 + sessionId.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length] ?? palette[0]!;
+}
+
+/** Short display label for a source-qualified session id (`claude:<path>` → file stem). */
+export function sessionLabel(sessionId: string): string {
+  const sep = sessionId.indexOf(':');
+  const rest = sep >= 0 ? sessionId.slice(sep + 1) : sessionId;
+  const parts = rest.split('/');
+  const last = parts[parts.length - 1] ?? rest;
+  const stem = last.replace(/\.(jsonl|json|db)$/i, '');
+  return stem !== '' ? stem : rest !== '' ? rest : sessionId;
+}
+
+/** Priced spend of one bucket, priced exactly the way aggregate() prices it. */
+export function bucketSpend(b: UsageBucket, pricing: PricingTable): number {
+  return costOf(
+    {
+      input: b.input,
+      cacheRead: b.cacheRead,
+      cacheWrite: b.cacheWrite,
+      cacheWrite5m: b.cacheWrite5m ?? 0,
+      cacheWrite1h: b.cacheWrite1h ?? 0,
+      output: b.output,
+      reasoning: b.reasoning,
+    },
+    b.model,
+    pricing,
+    b.requests,
+  );
+}
+
+/** Per-session priced spend per column: values[sessionIndex][column]. */
+export interface SessionSpendStack {
+  /** Session ids in first-seen order — a stable legend order. */
+  sessions: string[];
+  /** Priced spend per session and column (sessions absent from a bucket add 0). */
+  values: number[][];
+  /** Column totals: the sum of that column's session segments. */
+  totals: number[];
+}
+
+/**
+ * True when `ts` falls inside `range`, in one of `columns`. `range` is the
+ * window aggregate() drops buckets by and `columns` are that window's own
+ * columns, so a timestamp at or past the range end has NO column: columnFor
+ * alone would clamp it into the last one, inflating that column with spend (or
+ * a duration) the range does not contain.
+ */
+function columnInRange(columns: number[], range: ActivityRange, ts: number): boolean {
+  if (!Number.isFinite(ts)) return false;
+  if (ts < range.startMs || ts >= range.endMs) return false;
+  return columnFor(columns, ts) >= 0;
+}
+
+/**
+ * Stack one segment per session in each of the range's own columns. Column
+ * total equals the priced spend recorded in that bucket, so the segments of a
+ * column sum back to the bucket's spend — and never beyond it: a bucket
+ * outside `range` (a future-dated timestamp, say) belongs to no column and is
+ * dropped exactly as aggregate() drops it. Buckets without a sessionId are
+ * ignored (they carry no identity to drill into).
+ */
+export function sessionSpendStack(
+  columns: number[],
+  buckets: UsageBucket[],
+  priceOf: (bucket: UsageBucket) => number,
+  range: ActivityRange,
+): SessionSpendStack {
+  const index = new Map<string, number>();
+  const values: number[][] = [];
+  const totals = columns.map(() => 0);
+  for (const b of buckets) {
+    const id = b.sessionId;
+    if (id === undefined) continue;
+    if (!columnInRange(columns, range, b.hourMs)) continue;
+    const col = columnFor(columns, b.hourMs);
+    let row = index.get(id);
+    if (row === undefined) {
+      row = values.length;
+      index.set(id, row);
+      values.push(columns.map(() => 0));
+    }
+    const spend = priceOf(b);
+    const line = values[row]!;
+    line[col] = (line[col] ?? 0) + spend;
+    totals[col] = (totals[col] ?? 0) + spend;
+  }
+  return { sessions: [...index.keys()], values, totals };
+}
+
+/** Elapsed-duration cohort statistics per column plus the range-wide mean. */
+export interface DurationCohorts {
+  /** Mean elapsed duration (ms) of the sessions that STARTED in each column; null = no measurable session. */
+  perColumn: Array<number | null>;
+  /** Mean elapsed duration (ms) across the measurable sessions of the filtered range; null = none. */
+  overallMs: number | null;
+  /** Sessions of the filtered range that contributed to a cohort or to the overall mean. */
+  counted: number;
+  /** Sessions resident in the filtered range that contributed nothing (no usable duration or no in-range start). */
+  excluded: number;
+}
+
+/**
+ * Elapsed session duration cohorts. Each session contributes its elapsed proxy
+ * (first usable span start .. last usable span end of that session, idle gaps
+ * included) exactly once, to the column its session STARTED in, and exactly
+ * once to the overall mean. `range` IS the filtered window and `columns` its
+ * own columns (both as aggregate() built them), so a bucket outside them — a
+ * future-dated one, or one from before the window — belongs to a session the
+ * range does not contain: such a session is dropped outright, never clamped
+ * into the last column, never averaged in, and never tallied as an exclusion,
+ * since it was not measurable in this range at all. Sessions of the range with
+ * no usable duration (or no in-range start) are excluded and counted. An empty
+ * cohort stays null so the panel can print an en dash instead of a zero bar.
+ */
+export function durationCohorts(columns: number[], buckets: UsageBucket[], range: ActivityRange): DurationCohorts {
+  const durationOf = new Map<string, number>();
+  const startOf = new Map<string, number>();
+  const seen = new Set<string>();
+  for (const b of buckets) {
+    const id = b.sessionId;
+    if (id === undefined) continue;
+    if (!columnInRange(columns, range, b.hourMs)) continue; // outside the filtered window
+    seen.add(id); // the session has activity inside the range
+    if (b.sessionDurationMs !== undefined && Number.isFinite(b.sessionDurationMs) && b.sessionDurationMs >= 0) {
+      durationOf.set(id, b.sessionDurationMs);
+    }
+    if (b.sessionStartedMs !== undefined && columnInRange(columns, range, b.sessionStartedMs)) {
+      startOf.set(id, b.sessionStartedMs);
+    }
+  }
+  const sums = columns.map(() => 0);
+  const counts = columns.map(() => 0);
+  let total = 0;
+  let counted = 0;
+  for (const id of seen) {
+    const ms = durationOf.get(id);
+    const start = startOf.get(id);
+    if (ms === undefined || start === undefined) continue; // excluded: not measurable inside this range
+    total += ms;
+    counted += 1;
+    const col = columnFor(columns, start);
+    sums[col] = (sums[col] ?? 0) + ms;
+    counts[col] = (counts[col] ?? 0) + 1;
+  }
+  return {
+    perColumn: columns.map((_, i) => ((counts[i] ?? 0) > 0 ? (sums[i] ?? 0) / (counts[i] ?? 1) : null)),
+    overallMs: counted > 0 ? total / counted : null,
+    counted,
+    excluded: seen.size - counted,
+  };
 }

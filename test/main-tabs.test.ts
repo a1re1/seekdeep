@@ -64,3 +64,47 @@ describe('session tab close (closeSession)', () => {
     expect(css).toContain('.session-tab-close:hover');
   });
 });
+
+// The activity page gained a session drill-down: its callback must reach the
+// same open path the session index uses (openEntry) instead of duplicating
+// loading logic, and must report an unloaded session through setStatus.
+describe('activity session drill-down wiring', () => {
+  test('the activity model carries session identity/duration data and a pricing table', () => {
+    expect(mainSource).toContain('sessionBuckets: buckets ?? []');
+    expect(mainSource).toContain('pricing: effectivePricing(),');
+  });
+
+  test('onOpenSession reuses the index session-open path with a status fallback', () => {
+    expect(mainSource).toContain('onOpenSession: (sessionId) => {');
+    const start = mainSource.indexOf('function openSessionIdentity');
+    expect(start).toBeGreaterThan(-1);
+    const end = mainSource.indexOf('function rebuildIndex', start);
+    expect(end).toBeGreaterThan(start);
+    const body = mainSource.slice(start, end);
+    // Same plumbing as the index picker, and the same page switch addSession uses.
+    expect(body).toContain('void openEntry(entry)');
+    expect(body).toContain("showPage('trace')");
+    expect(body).toContain('state.active = at');
+    expect(body).toContain('setStatus(');
+    // The indexed branch looks the entry up by BOTH kind and path, never by name.
+    expect(body).toContain('index.entries[kind].find((e) => e.path === rest)');
+  });
+});
+
+// Spend and duration are per session, so a transcript that is both indexed and
+// dropped in must be recognised by the transcript's own identity (the parser's
+// session id, shared by every copy) — a file name is not identity.
+describe('activity sources dedupe uploaded copies of an indexed transcript', () => {
+  test('the extra-session filter keys on the transcript id, never on a file name', () => {
+    const start = mainSource.indexOf('function activitySources');
+    expect(start).toBeGreaterThan(-1);
+    const end = mainSource.indexOf('function collectActivity', start);
+    expect(end).toBeGreaterThan(start);
+    const body = mainSource.slice(start, end);
+    expect(body).toContain('const known = new Set(entries.map((e) => e.id))');
+    expect(body).toContain('if (known.has(id) || seen.has(id)) continue');
+    // The uploaded copy is still bucketed under its own `upload:` identity, so
+    // even an unindexed copy of the same transcript can never merge with it.
+    expect(mainSource).toContain('const uploaded = extra.map((s) => bucketSession(s, { sessionId: `upload:${s.id}` }))');
+  });
+});

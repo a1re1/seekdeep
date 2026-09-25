@@ -17,7 +17,7 @@ const BATCH_SIZE = 8;
 
 /** A cached bucket list plus the freshness stamps of its source file. */
 /** Bump when UsageBucket gains fields: older records are re-read, not trusted. */
-export const ACTIVITY_SCHEMA = 2;
+export const ACTIVITY_SCHEMA = 3;
 
 export interface ActivityRecord {
   schema: number;
@@ -25,7 +25,16 @@ export interface ActivityRecord {
   path: string;
   size: number;
   lastModified: number;
+  /** Source-qualified identity the record was read from (also its cache key). */
+  sessionId?: string;
+  /** Elapsed session duration (first span start .. last span end), when measurable. */
+  sessionDurationMs?: number;
   buckets: UsageBucket[];
+}
+
+/** Source-qualified identity of an indexed transcript: `${kind}:${path}`. */
+export function sessionIdentity(kind: SourceKind, path: string): string {
+  return `${kind}:${path}`;
 }
 
 /**
@@ -40,14 +49,22 @@ export async function collectBuckets(
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ buckets: UsageBucket[]; skipped: string[] }> {
   const cache = await loadActivityCache();
-  const lists: UsageBucket[][] = [];
+  // One list per session identity: the same transcript must never contribute
+  // twice, whether it arrives as a cache hit, a fresh read, or both.
+  const lists = new Map<string, UsageBucket[]>();
   const skipped: string[] = [];
   const stale: SessionEntry[] = [];
   let done = 0;
   for (const entry of entries) {
-    const rec = cache.get(`${entry.kind}:${entry.path}`);
-    if (rec !== undefined && rec.size === entry.file.size && rec.lastModified === entry.file.lastModified) {
-      lists.push(withHarness(rec.buckets, entry.kind));
+    const id = sessionIdentity(entry.kind, entry.path);
+    const rec = cache.get(id);
+    const fresh = rec !== undefined && rec.size === entry.file.size && rec.lastModified === entry.file.lastModified;
+    if (lists.has(id)) {
+      done += 1; // duplicate entry for a transcript already counted
+      continue;
+    }
+    if (fresh && rec !== undefined) {
+      lists.set(id, withHarness(rec.buckets, entry.kind));
       done += 1;
     } else {
       stale.push(entry);
@@ -62,12 +79,16 @@ export async function collectBuckets(
       if (rec === null) skipped.push(batch[j]!.path);
       else fresh.push(rec);
     });
-    for (const rec of fresh) lists.push(withHarness(rec.buckets, rec.kind));
+    for (const rec of fresh) {
+      const id = rec.sessionId ?? sessionIdentity(rec.kind, rec.path);
+      if (lists.has(id)) continue; // a cached copy of this session is already in
+      lists.set(id, withHarness(rec.buckets, rec.kind));
+    }
     await saveActivityRecords(fresh);
     done += batch.length;
     onProgress?.(done, entries.length);
   }
-  return { buckets: mergeBuckets(lists), skipped };
+  return { buckets: mergeBuckets([...lists.values()]), skipped };
 }
 
 /** Records cached before buckets carried a harness get it from their source kind. */
@@ -115,13 +136,18 @@ export async function readRecord(entry: SessionEntry): Promise<ActivityRecord | 
   for (let attempt = 0; ; attempt += 1) {
     try {
       const text = await file.text();
+      const sessionId = sessionIdentity(entry.kind, entry.path);
+      const buckets = bucketSession(parseTranscript(text, entry.path), { sessionId });
+      const duration = buckets.find((b) => b.sessionDurationMs !== undefined)?.sessionDurationMs;
       return {
         schema: ACTIVITY_SCHEMA,
         kind: entry.kind,
         path: entry.path,
         size: file.size,
         lastModified: file.lastModified,
-        buckets: bucketSession(parseTranscript(text, entry.path)),
+        sessionId,
+        ...(duration !== undefined ? { sessionDurationMs: duration } : {}),
+        buckets,
       };
     } catch {
       if (attempt > 0 || file.refresh === undefined) return null; // one unreadable transcript must not sink the whole page
@@ -149,9 +175,12 @@ async function loadActivityCache(): Promise<Map<string, ActivityRecord>> {
               typeof rec?.path === 'string' &&
               typeof rec?.size === 'number' &&
               typeof rec?.lastModified === 'number' &&
-              Array.isArray(rec?.buckets)
+              Array.isArray(rec?.buckets) &&
+              (rec.sessionId === undefined || typeof rec.sessionId === 'string')
             ) {
-              byKey.set(`${rec.kind}:${rec.path}`, rec);
+              // Keyed by the source-qualified identity, so an uploaded sample and
+              // an indexed transcript can never collide into one record.
+              byKey.set(rec.sessionId ?? sessionIdentity(rec.kind, rec.path), rec);
             }
           }
           resolve(byKey);
@@ -175,7 +204,7 @@ async function saveActivityRecords(records: ActivityRecord[]): Promise<void> {
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction('activity', 'readwrite');
         const store = tx.objectStore('activity');
-        for (const rec of records) store.put(rec, `${rec.kind}:${rec.path}`);
+        for (const rec of records) store.put(rec, rec.sessionId ?? sessionIdentity(rec.kind, rec.path));
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error ?? new Error('indexedDB: cache write failed'));
         tx.onabort = () => reject(tx.error ?? new Error('indexedDB: cache write aborted'));

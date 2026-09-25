@@ -29,7 +29,7 @@ import { byId, el, sizeCanvas } from './ui/dom.ts';
 import { icon } from './ui/icons.ts';
 import { readFiles } from './ui/loader.ts';
 import { renderPricingEditor } from './ui/pricing.ts';
-import { cleanupActivityView, harnessMatches, reconcileHarnessSelection, renderActivity } from './ui/activity-view.ts';
+import { cleanupActivityView, harnessMatches, reconcileHarnessSelection, renderActivity, sessionLabel } from './ui/activity-view.ts';
 import { aggregate, bucketSession, mergeBuckets, rangeFor } from './stats.ts';
 import type { RangePreset, UsageBucket } from './stats.ts';
 import { renderSummary, summarize } from './ui/summary.ts';
@@ -280,6 +280,38 @@ function main(): void {
     } catch (err) {
       setStatus(`failed to open session: ${err instanceof Error ? err.message : String(err)}`, true);
     }
+  }
+
+  /**
+   * Open the session behind an activity drill-down segment by its stable id.
+   * Indexed sessions take the same openEntry() path the session index uses; an
+   * uploaded/sample copy activates its already-loaded tab. A session that
+   * exists only as activity data is reported through setStatus, never thrown.
+   */
+  function openSessionIdentity(sessionId: string): void {
+    const sep = sessionId.indexOf(':');
+    const prefix = sep < 0 ? '' : sessionId.slice(0, sep);
+    const rest = sep < 0 ? sessionId : sessionId.slice(sep + 1);
+    if (prefix === 'upload') {
+      const at = state.sessions.findIndex((l) => l.session.id === rest);
+      if (at >= 0) {
+        state.active = at;
+        state.zoomNode = null;
+        state.picker = false;
+        showPage('trace');
+        renderTabs();
+        render(true);
+        return;
+      }
+    } else if (prefix !== '') {
+      const kind = SOURCE_KINDS.find((k) => k === prefix);
+      const entry = kind === undefined ? undefined : index.entries[kind].find((e) => e.path === rest);
+      if (entry !== undefined) {
+        void openEntry(entry);
+        return;
+      }
+    }
+    setStatus(`${sessionLabel(sessionId)} is only activity data here — reconnect its source (or drop its transcript) to inspect it`, true);
   }
 
   function rebuildIndex(): void {
@@ -665,8 +697,19 @@ function main(): void {
   /** Index entries plus sessions that were dropped in and are not in the index. */
   function activitySources(): { entries: SessionEntry[]; extra: Session[] } {
     const entries = [...index.entries.claude, ...index.entries.codex, ...index.entries.drip];
+    // Dedupe by the transcript's own identity (the parser's session id, shared
+    // by every copy of the same file) — never by file name, so dropping the
+    // same transcript twice cannot count it twice while two distinct sessions
+    // with one display name stay apart.
     const known = new Set(entries.map((e) => e.id));
-    const extra = state.sessions.map((l) => l.session).filter((s) => !known.has(s.id));
+    const seen = new Set<string>();
+    const extra: Session[] = [];
+    for (const loaded of state.sessions) {
+      const id = loaded.session.id;
+      if (known.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      extra.push(loaded.session);
+    }
     return { entries, extra };
   }
 
@@ -682,7 +725,10 @@ function main(): void {
         activity.progress = `reading ${done} / ${total} transcripts`;
         renderActivityPage();
       });
-      activity.buckets = mergeBuckets([indexed, ...extra.map(bucketSession)]);
+      // Uploaded/sample sessions carry a distinct `upload:` prefix so an uploaded
+    // sample and an indexed transcript never merge into one session.
+    const uploaded = extra.map((s) => bucketSession(s, { sessionId: `upload:${s.id}` }));
+    activity.buckets = mergeBuckets([indexed, ...uploaded]);
       activity.skipped = skipped;
     } catch (err) {
       setStatus(`failed to read transcripts: ${err instanceof Error ? err.message : String(err)}`, true);
@@ -714,6 +760,8 @@ function main(): void {
         harnesses,
         harness: activity.harness,
         harnessOpen: activity.harnessOpen,
+        sessionBuckets: buckets ?? [],
+        pricing: effectivePricing(),
         empty: nothing
           ? 'Connect ~/.claude, ~/.codex, or ~/.drip from the session picker (or drop a transcript) to see your activity.'
           : buckets === null
@@ -737,6 +785,10 @@ function main(): void {
           activity.harnessOpen = false;
           activity.buckets = null;
           void collectActivity();
+        },
+        onOpenSession: (sessionId) => {
+          activity.harnessOpen = false;
+          openSessionIdentity(sessionId);
         },
       },
     );

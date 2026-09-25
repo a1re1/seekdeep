@@ -724,6 +724,8 @@ body.focus .content { padding: 8px; }
 .chart-gridline { stroke: var(--stroke-hairline); }
 .chart-label { fill: var(--text-tertiary); font-size: 11px; font-family: var(--font-ui); }
 .chart rect:hover { opacity: 0.8; }
+.chart-headline { font-size: var(--text-body); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.chart-sub { margin: 0; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--text-caption); color: var(--text-secondary); }
 .legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .legend-swatch { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
