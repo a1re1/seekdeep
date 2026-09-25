@@ -81,6 +81,9 @@ export function toggleLegend(
   key: string,
   opts: { exclusive?: boolean; keys?: readonly string[] } = {},
 ): LegendState {
+  // A key the legend does not carry has no series to isolate or hide: ignoring
+  // it keeps the "n hidden" affordance from counting a key that is not drawn.
+  if (opts.keys !== undefined && !opts.keys.includes(key)) return state;
   if (opts.exclusive === true) {
     return state.isolated === key ? resetLegend() : { isolated: key, hidden: [] };
   }

@@ -511,6 +511,71 @@ describe('legend interaction reducer', () => {
   });
 });
 
+// Constructed datasets the shipped workspace transcripts never produce: a
+// one-key legend (the smallest multi-series edge), a wide legend (the case the
+// clamped scrolling box exists for), and a click on a key the legend lacks.
+describe('legend interaction reducer — constructed edge datasets', () => {
+  test('a one-key legend can never blank itself: hiding the last key shows all again', () => {
+    const one = ['only'];
+    const hid = toggleLegend(resetLegend(), 'only', { exclusive: false, keys: one });
+    expect(hid).toEqual(resetLegend());
+    expect(legendVisible(hid, 'only')).toBe(true);
+    expect(legendFiltered(hid)).toBe(false);
+    // Isolation stays reachable, and isolating the isolated key resets.
+    const iso = toggleLegend(hid, 'only', { exclusive: true, keys: one });
+    expect(legendVisible(iso, 'only')).toBe(true);
+    expect(toggleLegend(iso, 'only', { exclusive: true, keys: one })).toEqual(resetLegend());
+  });
+
+  test('a wide twelve-key legend hides each key independently, then restores out of order', () => {
+    const wide = Array.from({ length: 12 }, (_, i) => `k${i}`);
+    const last = wide[wide.length - 1]!;
+    let state = resetLegend();
+    for (const k of wide.slice(0, wide.length - 1)) {
+      state = toggleLegend(state, k, { exclusive: false, keys: wide });
+      expect(legendVisible(state, k)).toBe(false);
+    }
+    expect(legendHiddenCount(state, wide)).toBe(wide.length - 1);
+    // Hiding the LAST visible key is the blank-chart case: show-all instead.
+    state = toggleLegend(state, last, { exclusive: false, keys: wide });
+    expect(state).toEqual(resetLegend());
+    expect(legendHiddenCount(state, wide)).toBe(0);
+    // Out-of-order restore: hide three, bring one back, the others stay hidden.
+    state = resetLegend();
+    for (const k of ['k1', 'k5', 'k9']) state = toggleLegend(state, k, { exclusive: false, keys: wide });
+    expect(legendHiddenCount(state, wide)).toBe(3);
+    state = toggleLegend(state, 'k5', { exclusive: false, keys: wide });
+    expect(legendVisible(state, 'k5')).toBe(true);
+    expect(legendHiddenCount(state, wide)).toBe(2);
+    // Isolating a key clears the hide set entirely.
+    const iso = toggleLegend(state, 'k2', { exclusive: true, keys: wide });
+    expect(iso.hidden).toEqual([]);
+    expect(legendVisible(iso, 'k2')).toBe(true);
+    expect(legendVisible(iso, 'k5')).toBe(false);
+  });
+
+  test('a click on a key the legend does not carry changes nothing', () => {
+    const keys = ['a', 'b'];
+    const state = toggleLegend(resetLegend(), 'ghost', { exclusive: false, keys });
+    expect(state).toEqual(resetLegend());
+    expect(legendFiltered(state)).toBe(false);
+    expect(legendHiddenCount(state, keys)).toBe(0);
+  });
+
+  test('visibleLegendSeries keeps order and never returns an empty draw list', () => {
+    const series = [
+      { key: 'a', values: [1] },
+      { key: 'b', values: [2] },
+      { key: 'c', values: [3] },
+    ];
+    const iso = toggleLegend(resetLegend(), 'c', { exclusive: true, keys: ['a', 'b', 'c'] });
+    expect(visibleLegendSeries(iso, series).map((s) => s.key)).toEqual(['c']);
+    const hid = toggleLegend(resetLegend(), 'b', { exclusive: false, keys: ['a', 'b', 'c'] });
+    expect(visibleLegendSeries(hid, series).map((s) => s.key)).toEqual(['a', 'c']);
+    expect(visibleLegendSeries(toggleLegend(resetLegend(), 'ghost', { exclusive: false }), series)).toHaveLength(3);
+  });
+});
+
 describe('sessionDisplayLabel', () => {
   const id = 'claude:/home/me/.claude/projects/x/transcript.jsonl';
 
@@ -536,6 +601,30 @@ describe('sessionDisplayLabel', () => {
 
   test('whitespace is collapsed in the preview', () => {
     expect(sessionDisplayLabel(id, { [id]: 'two\n lines' })).toBe('two lines');
+  });
+
+  test('only the generic stems themselves are rejected, not titles that mention them', () => {
+    expect(sessionDisplayLabel(id, { [id]: 'Debug transcript parsing' })).toBe('Debug transcript parsing');
+    expect(sessionDisplayLabel(id, { [id]: 'Session cleanup sweep' })).toBe('Session cleanup sweep');
+    expect(sessionDisplayLabel(id, { [id]: 'TRANSCRIPT' })).toBe(id);
+    expect(sessionDisplayLabel(id, { [id]: 'Untitled' })).toBe(id);
+  });
+
+  test('the preview budget is exact at the boundary (untouched at 48, ellipsis past it)', () => {
+    const exact = 'b'.repeat(SESSION_LABEL_MAX);
+    expect(sessionDisplayLabel(id, { [id]: exact })).toBe(exact);
+    const over = 'b'.repeat(SESSION_LABEL_MAX + 1);
+    const preview = sessionDisplayLabel(id, { [id]: over });
+    expect(preview.length).toBe(SESSION_LABEL_MAX);
+    expect(preview).toBe(`${'b'.repeat(SESSION_LABEL_MAX - 1)}\u2026`);
+    // Hover keeps the whole untruncated title.
+    expect(sessionHoverLabel(id, { [id]: over })).toBe(over);
+  });
+
+  test('no title, an unrelated map entry, and a non-ASCII title all resolve stably', () => {
+    expect(sessionDisplayLabel('upload:drop.jsonl')).toBe('upload:drop.jsonl');
+    expect(sessionDisplayLabel(id, { 'someone:else': 'Other' })).toBe(id);
+    expect(sessionDisplayLabel(id, { [id]: 'Déployer les légendes' })).toBe('Déployer les légendes');
   });
 });
 
