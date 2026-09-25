@@ -236,3 +236,78 @@ describe('aggregate', () => {
     expect(a.perModel[0]!.outputPrice).toBe(25);
   });
 });
+
+describe('session identity, duration and spend conservation', () => {
+  const t = Date.parse('2026-09-01T10:15:00Z');
+  const h = Math.floor(NOW / HOUR) * HOUR;
+
+  test('session duration is first-span-start..last-span-end, idle gap included', () => {
+    // A 2h idle gap between two model spans sits INSIDE the session; the elapsed
+    // proxy spans it, so it is not a sum of span durations.
+    const s = session([
+      modelSpan('claude-opus-5', t, 1000, { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 }),
+      modelSpan('claude-opus-5', t + 2 * HOUR, 500, { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 }),
+    ]);
+    const buckets = bucketSession(s, { sessionId: 'claude:a' });
+    const marked = buckets.filter((b) => b.sessionDurationMs !== undefined);
+    expect(marked).toHaveLength(1); // exactly one duration marker per session
+    expect(marked[0]!.sessionDurationMs).toBe(2 * HOUR + 500);
+    // It rests on the session's FIRST (earliest) hour bucket.
+    const earliest = Math.min(...buckets.map((b) => b.hourMs));
+    expect(marked[0]!.hourMs).toBe(earliest);
+    expect(buckets.every((b) => b.sessionId === 'claude:a')).toBe(true);
+    expect(buckets.every((b) => b.sessionStartedMs === t)).toBe(true);
+  });
+
+  test('mergeBuckets keeps different session ids apart in one model/hour', () => {
+    const a = bucketSession(session([modelSpan('m', t, 1, { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 })]), { sessionId: 'claude:a' });
+    const b = bucketSession(session([modelSpan('m', t + 60_000, 1, { input: 2, cacheRead: 0, cacheWrite: 0, output: 0 })]), { sessionId: 'upload:b' });
+    const merged = mergeBuckets([a, b]);
+    expect(merged).toHaveLength(2); // never summed together
+    expect(merged.find((x) => x.sessionId === 'claude:a')?.input).toBe(1);
+    expect(merged.find((x) => x.sessionId === 'upload:b')?.input).toBe(2);
+  });
+
+  test('same-session buckets still sum, and the duration marker is copied not summed', () => {
+    // One session spanning two hours: bucketSession stamps the marker on its
+    // first bucket only, so the two same-session buckets share one marker.
+    const spans = (): Span[] => [
+      modelSpan('m', t, 1000, { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 }),
+      modelSpan('m', t + HOUR, 1000, { input: 4, cacheRead: 0, cacheWrite: 0, output: 0 }),
+    ];
+    const buckets = bucketSession(session(spans()), { sessionId: 'claude:a' });
+    expect(buckets).toHaveLength(2);
+    // The same transcript read twice (cache miss then fallback) must not double
+    // count: the identical (hourMs, model, harness, sessionId) keys are summed
+    // once as spend, while the elapsed marker is copied, never added.
+    const merged = mergeBuckets([buckets, bucketSession(session(spans()), { sessionId: 'claude:a' })]);
+    expect(merged).toHaveLength(2);
+    expect(merged.reduce((acc, x) => acc + x.input, 0)).toBe(10);
+    expect(merged.reduce((acc, x) => acc + x.requests, 0)).toBe(4);
+    const markers = merged.filter((x) => x.sessionDurationMs !== undefined);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.sessionDurationMs).toBe(HOUR + 1000);
+  });
+
+  test('anonymous buckets keep today behaviour exactly', () => {
+    const anon = bucket(h, 'm', { input: 1 });
+    const merged = mergeBuckets([[anon], [bucket(h, 'm', { input: 2 })]]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.input).toBe(3);
+    expect(merged[0]!.sessionId).toBeUndefined();
+  });
+
+  test('spend conservation: priced session segments sum to the column total', () => {
+    const a = bucketSession(session([modelSpan('claude-opus-5', t, 1000, { input: 1_000_000, cacheRead: 0, cacheWrite: 0, output: 0 })]), { sessionId: 'claude:a' });
+    const b = bucketSession(session([modelSpan('claude-opus-5', t + 60_000, 1000, { input: 500_000, cacheRead: 0, cacheWrite: 0, output: 0 })]), { sessionId: 'upload:b' });
+    const buckets = mergeBuckets([a, b]);
+    const range = rangeFor('48h', NOW, buckets);
+    const whole = aggregate(buckets, DEFAULT_PRICING, range);
+    const col = whole.columns.indexOf(Math.floor(t / HOUR) * HOUR);
+    const total = whole.series.costUsd.reduce((acc, row) => acc + (row[col] ?? 0), 0);
+    const perSession = [...a, ...b].reduce((acc, x) => acc + aggregate([x], DEFAULT_PRICING, range).totals.costUsd, 0);
+    expect(total).toBeCloseTo(perSession, 9);
+    // Two sessions, two rows: the merged list never collapses them into one.
+    expect(new Set(buckets.map((x) => x.sessionId)).size).toBe(2);
+  });
+});

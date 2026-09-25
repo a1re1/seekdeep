@@ -30,6 +30,20 @@ export interface UsageBucket {
   reasoning: number;
   /** SUM of model-span durations in the bucket; averages derived later. */
   latencyMs: number;
+  /**
+   * Source-qualified session identity (`claude:<path>`, `upload:<name>`, …) when
+   * the bucket came from one known session. Absent on anonymous buckets, which
+   * keep the legacy bucket key shape exactly.
+   */
+  sessionId?: string;
+  /** The session's root start (ms epoch) — the session's own start, not the bucket hour. */
+  sessionStartedMs?: number;
+  /**
+   * Elapsed session duration (first usable span start .. last usable span end,
+   * idle gaps included). Set ONLY on the first bucket of a session so summing
+   * buckets across a range cannot double count it.
+   */
+  sessionDurationMs?: number;
   outputTokSec?: never;
 }
 
@@ -98,15 +112,49 @@ export interface Activity {
  * sessions may carry spans with `meta.harness === 'drip'` — they are real
  * model calls, so they are included like any other model span.
  */
-export function bucketSession(session: Session): UsageBucket[] {
+/** Optional source-qualified identity a caller can attach to a bucket list. */
+export interface SessionBucketIdentity {
+  /** Source-qualified session id (`claude:<path>`, `upload:<name>`, …). */
+  sessionId?: string;
+  /** Root session start (ms); defaults to `session.root.startMs`. */
+  startedMs?: number;
+}
+
+/**
+ * Elapsed bounds of a session: the earliest usable span start and the latest
+ * usable span end over the WHOLE span tree (idle gaps between spans included).
+ * This is an elapsed-time proxy — never confirmed PR completion time.
+ */
+function elapsedBounds(root: Session['root']): { startMs: number; endMs: number } | null {
+  let start: number | undefined;
+  let end: number | undefined;
+  for (const span of flatten(root)) {
+    if (!Number.isFinite(span.startMs) || !Number.isFinite(span.endMs)) continue;
+    if (start === undefined || span.startMs < start) start = span.startMs;
+    if (end === undefined || span.endMs > end) end = span.endMs;
+  }
+  if (start === undefined || end === undefined) return null;
+  return { startMs: start, endMs: end };
+}
+
+export function bucketSession(session: Session, identity: SessionBucketIdentity = {}): UsageBucket[] {
   const byKey = new Map<string, UsageBucket>();
   const own = harnessOf(session.format);
+  // Identity defaults to the parsed session id; callers that know the source
+  // pass a qualified id so two sources cannot collide on one display name.
+  const explicit = identity.sessionId;
+  const sessionId = explicit !== undefined && explicit !== '' ? explicit : session.id !== '' ? session.id : undefined;
+  const rootStart = Number.isFinite(session.root.startMs) ? session.root.startMs : undefined;
+  const startedMs = identity.startedMs ?? rootStart;
   for (const span of flatten(session.root)) {
     if (span.kind !== 'model' || !span.usage) continue;
     const hourMs = Math.floor(span.startMs / HOUR_MS) * HOUR_MS;
     const model = span.model ?? '';
     const harness = typeof span.meta?.harness === 'string' ? span.meta.harness : own;
-    const key = bucketKey(hourMs, model, harness);
+    // The session id is part of the key: two sessions in the same hour and model
+    // must stay apart so neither one's spend is attributed to the other. An
+    // anonymous bucket appends nothing and keeps the legacy key byte-identical.
+    const key = `${bucketKey(hourMs, model, harness)}\u0000${sessionId ?? ''}`;
     let bucket = byKey.get(key);
     if (bucket === undefined) {
       bucket = {
@@ -123,6 +171,8 @@ export function bucketSession(session: Session): UsageBucket[] {
         reasoning: 0,
         latencyMs: 0,
       };
+      if (sessionId !== undefined) bucket.sessionId = sessionId;
+      if (startedMs !== undefined) bucket.sessionStartedMs = startedMs;
       byKey.set(key, bucket);
     }
     if (span.provider !== undefined && bucket.provider === undefined) {
@@ -139,7 +189,19 @@ export function bucketSession(session: Session): UsageBucket[] {
     bucket.reasoning += u.reasoning || 0;
     bucket.latencyMs += Math.max(0, span.endMs - span.startMs);
   }
-  return [...byKey.values()];
+  const buckets = [...byKey.values()];
+  // Exactly ONE bucket per session carries the elapsed duration — the earliest
+  // one — so summing a range's buckets counts each session once.
+  const bounds = elapsedBounds(session.root);
+  if (bounds !== null && buckets.length > 0) {
+    const elapsed = bounds.endMs - bounds.startMs;
+    if (elapsed >= 0) {
+      let first = buckets[0]!;
+      for (const b of buckets) if (b.hourMs < first.hourMs) first = b;
+      first.sessionDurationMs = elapsed;
+    }
+  }
+  return buckets;
 }
 
 /** The harness label shown in the activity filter for a transcript format. */
@@ -156,11 +218,16 @@ export function mergeBuckets(lists: UsageBucket[][]): UsageBucket[] {
   const byKey = new Map<string, UsageBucket>();
   for (const list of lists) {
     for (const b of list) {
-      const key = bucketKey(b.hourMs, b.model, b.harness);
+    // The session is part of the merge key: two different sessions in one hour
+    // and model stay apart (their spend is never summed together), while
+    // buckets without a sessionId merge exactly as they always did.
+    const key = `${bucketKey(b.hourMs, b.model, b.harness)}\u0000${b.sessionId ?? ''}`;
       let bucket = byKey.get(key);
       if (bucket === undefined) {
         bucket = {
           hourMs: b.hourMs,
+          ...(b.sessionId !== undefined ? { sessionId: b.sessionId } : {}),
+          ...(b.sessionStartedMs !== undefined ? { sessionStartedMs: b.sessionStartedMs } : {}),
           model: b.model,
           ...(b.harness !== undefined ? { harness: b.harness } : {}),
           requests: 0,
@@ -187,6 +254,12 @@ export function mergeBuckets(lists: UsageBucket[][]): UsageBucket[] {
       bucket.output += b.output;
       bucket.reasoning += b.reasoning;
       bucket.latencyMs += b.latencyMs;
+    // The elapsed duration is NEVER summed: a session's single marker is copied
+    // once (first source wins), so a cache hit plus a fresh read of the same
+    // session cannot double count it.
+    if (bucket.sessionDurationMs === undefined && b.sessionDurationMs !== undefined) {
+      bucket.sessionDurationMs = b.sessionDurationMs;
+    }
     }
   }
   return [...byKey.values()].sort((a, b) => a.hourMs - b.hourMs || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
