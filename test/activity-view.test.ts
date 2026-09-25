@@ -637,5 +637,13 @@ describe('legend overflow styles', () => {
     expect(css).toContain('.legend-item--muted');
     expect(css).toContain('.legend-item--isolated');
     expect(css).toContain('.legend-reset');
+    // One rule per selector: appended duplicates would leave the legend styling
+    // decided by file order alone, so pin that each block appears exactly once.
+    const occurrences = (needle: string): number => css.split(needle).length - 1;
+    expect(occurrences('.chart-legend {')).toBe(1);
+    expect(occurrences('.legend-item {')).toBe(1);
+    expect(occurrences('.legend-reset {')).toBe(1);
+    // The isolation ring must use the opaque accent, not a near-invisible tint.
+    expect(css).toMatch(/\.legend-item--isolated\s+\.legend-swatch\s*\{[^}]*var\(--accent\)/);
   });
 });

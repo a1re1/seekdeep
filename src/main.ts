@@ -741,19 +741,19 @@ function main(): void {
   }
 
   /**
- * Legend labels for activity sessions: an indexed entry's title under its
- * `kind:path` identity, and a dropped-in session's title under `upload:<id>`.
- */
-function activitySessionTitles(entries: SessionEntry[], extra: Session[]): Record<string, string> {
-  const titles: Record<string, string> = {};
-  for (const entry of entries) {
-    if (typeof entry.title === 'string' && entry.title.length > 0) titles[sessionIdentity(entry.kind, entry.path)] = entry.title;
+   * Legend labels for activity sessions: an indexed entry's title under its
+   * `kind:path` identity, and a dropped-in session's title under `upload:<id>`.
+   */
+  function activitySessionTitles(entries: SessionEntry[], extra: Session[]): Record<string, string> {
+    const titles: Record<string, string> = {};
+    for (const entry of entries) {
+      if (typeof entry.title === 'string' && entry.title.length > 0) titles[sessionIdentity(entry.kind, entry.path)] = entry.title;
+    }
+    for (const session of extra) {
+      if (typeof session.title === 'string' && session.title.length > 0) titles[`upload:${session.id}`] = session.title;
+    }
+    return titles;
   }
-  for (const session of extra) {
-    if (typeof session.title === 'string' && session.title.length > 0) titles[`upload:${session.id}`] = session.title;
-  }
-  return titles;
-}
 
 function renderActivityPage(): void {
     if (activity.page !== 'activity') return;

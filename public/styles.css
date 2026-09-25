@@ -726,8 +726,45 @@ body.focus .content { padding: 8px; }
 .chart rect:hover { opacity: 0.8; }
 .chart-headline { font-size: var(--text-body); color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .chart-sub { margin: 0; }
-.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--text-caption); color: var(--text-secondary); }
-.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 12px;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  /* About three rows visible; the rest stay reachable by scrolling. */
+  max-height: calc(3 * 1.5em + 6px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--stroke-control) transparent;
+  padding-right: 2px;
+}
+.chart-legend::-webkit-scrollbar { width: 8px; }
+.chart-legend::-webkit-scrollbar-thumb { background: var(--stroke-control); border-radius: 4px; }
+.chart-legend::-webkit-scrollbar-track { background: transparent; }
+/* Legend keys are controls: click isolates the series, shift-click hides it. */
+.legend-item {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  font-size: inherit;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.legend-item:hover .legend-label { text-decoration: underline; }
+.legend-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.legend-item--muted { opacity: .4; }
+.legend-item--isolated { font-weight: 600; color: var(--accent); }
+.legend-item--isolated .legend-swatch { box-shadow: 0 0 0 2px var(--accent); }
 .legend-swatch { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 
 .activity-table-wrap { overflow-x: auto; flex: none; }
@@ -800,45 +837,7 @@ body.focus .content { padding: 8px; }
 .chart-hlabel { font-family: var(--font-mono); fill: var(--text-secondary); }
 .chart-hvalue { fill: var(--text-primary); font-variant-numeric: tabular-nums; }
 
-/* Legend overflow: about three rows visible, the rest reachable by scrolling. */
-.chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px 10px;
-  max-height: calc(3 * 1.5em + 6px);
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--stroke-control) transparent;
-  padding-right: 2px;
-}
-.chart-legend::-webkit-scrollbar { width: 8px; }
-.chart-legend::-webkit-scrollbar-thumb { background: var(--stroke-control); border-radius: 4px; }
-.chart-legend::-webkit-scrollbar-track { background: transparent; }
-
 .chart-plot { display: block; }
-
-.legend-item {
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  border: 0;
-  margin: 0;
-  padding: 0;
-  font: inherit;
-  font-size: inherit;
-  color: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.legend-item:hover .legend-label { text-decoration: underline; }
-.legend-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.legend-item--muted { opacity: .4; }
-.legend-item--isolated { font-weight: 600; color: var(--accent); }
-.legend-item--isolated .legend-swatch { box-shadow: 0 0 0 2px var(--accent-soft); }
 
 .legend-reset {
   appearance: none;
