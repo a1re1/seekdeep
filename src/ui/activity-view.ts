@@ -28,6 +28,93 @@ export interface ActivityModel {
   sessionBuckets: UsageBucket[];
   /** Pricing table the session panels price bucket spend with. */
   pricing: PricingTable;
+  /**
+   * Optional sessionId → title map (indexed entries and `upload:<id>` sessions)
+   * so legend keys show a session name or first-user-message preview instead of
+   * a bare file stem. Absent map = stable-id labels.
+   */
+  sessionTitles?: Readonly<Record<string, string>>;
+}
+
+// ---- legend interaction (pure; no DOM) ------------------------------------
+
+/** Which keys a chart legend hides: one isolated key, or a set of muted keys. */
+export interface LegendState {
+  isolated: string | null;
+  hidden: string[];
+}
+
+/** Longest session preview a legend key shows before the ellipsis. */
+export const SESSION_LABEL_MAX = 48;
+
+const GENERIC_SESSION_LABELS = new Set(['transcript', 'session', 'conversation', 'chat', 'unknown', 'untitled']);
+
+/** Show-everything legend state — the reset target. */
+export function resetLegend(): LegendState {
+  return { isolated: null, hidden: [] };
+}
+
+/** Whether `key`'s series is drawn under `state`. */
+export function legendVisible(state: LegendState, key: string): boolean {
+  if (state.isolated !== null) return state.isolated === key;
+  return !state.hidden.includes(key);
+}
+
+/** Whether `state` filters anything out at all (drives the reset affordance). */
+export function legendFiltered(state: LegendState): boolean {
+  return state.isolated !== null || state.hidden.length > 0;
+}
+
+/** How many of `keys` the state hides (the "n hidden" affordance). */
+export function legendHiddenCount(state: LegendState, keys: readonly string[]): number {
+  return keys.reduce((n, key) => (legendVisible(state, key) ? n : n + 1), 0);
+}
+
+/**
+ * Legend-click reducer. A plain click (`exclusive`) isolates one key, and
+ * clicking the isolated key again (or reset) shows all. Shift-click hides just
+ * that key and clicking it again restores it. Hiding the LAST visible key would
+ * blank the chart, so it falls back to show-all rather than an empty plot.
+ */
+export function toggleLegend(
+  state: LegendState,
+  key: string,
+  opts: { exclusive?: boolean; keys?: readonly string[] } = {},
+): LegendState {
+  if (opts.exclusive === true) {
+    return state.isolated === key ? resetLegend() : { isolated: key, hidden: [] };
+  }
+  const hidden = state.hidden.includes(key) ? state.hidden.filter((k) => k !== key) : [...state.hidden, key];
+  const next: LegendState = { isolated: state.isolated, hidden };
+  if (opts.keys !== undefined && legendHiddenCount(next, opts.keys) >= opts.keys.length) return resetLegend();
+  return next;
+}
+
+/** The series a chart draws under `state`; an empty result falls back to all. */
+export function visibleLegendSeries<T extends { key: string }>(state: LegendState, series: readonly T[]): T[] {
+  const visible = series.filter((s) => legendVisible(state, s.key));
+  return visible.length === 0 ? [...series] : visible;
+}
+
+/** Full, untruncated legend text: the mapped title when meaningful, else the id. */
+export function sessionHoverLabel(sessionId: string, titles?: Readonly<Record<string, string>>): string {
+  const raw = titles?.[sessionId];
+  const text = raw === undefined ? '' : raw.replace(/\s+/g, ' ').trim();
+  if (text.length > 0 && !GENERIC_SESSION_LABELS.has(text.toLowerCase())) return text;
+  return sessionId;
+}
+
+/**
+ * Legend key for a session: the session's title / first user message clamped to
+ * a brief preview, else the stable session id — never a bare `transcript` stem.
+ * The untruncated text stays available through `sessionHoverLabel` for hover.
+ */
+export function sessionDisplayLabel(sessionId: string, titles?: Readonly<Record<string, string>>): string {
+  const raw = titles?.[sessionId];
+  const text = raw === undefined ? '' : raw.replace(/\s+/g, ' ').trim();
+  // No meaningful title: the id IS the anchor, so it is never truncated.
+  if (text.length === 0 || GENERIC_SESSION_LABELS.has(text.toLowerCase())) return sessionId;
+  return text.length <= SESSION_LABEL_MAX ? text : `${text.slice(0, SESSION_LABEL_MAX - 1)}…`;
 }
 
 export interface ActivityActions {
@@ -389,11 +476,26 @@ function buildCharts(activity: Activity | null, model: ActivityModel, actions: A
     panel.className = 'card chart-panel';
     const h = document.createElement('h3');
     h.textContent = spec.title;
-    panel.append(
-      h,
-      stackedBars(spec.columns, spec.series, { unit: spec.unit, format: spec.unit === '$' ? formatCost : formatCount, tooltip: tip }),
-      legendRow(spec.series),
-    );
+    const plot = document.createElement('div');
+    plot.className = 'chart-plot';
+    let state: LegendState = resetLegend();
+    // The chart is redrawn from the VISIBLE series, so the stack, the axis peak,
+    // tooltips and percentage math all drop hidden keys together.
+    const redraw = (): void => {
+      plot.replaceChildren(
+        stackedBars(spec.columns, visibleLegendSeries(state, spec.series), {
+          unit: spec.unit,
+          format: spec.unit === '$' ? formatCost : formatCount,
+          tooltip: tip,
+        }),
+        legendRow(spec.series, state, (next) => {
+          state = next;
+          redraw();
+        }),
+      );
+    };
+    redraw();
+    panel.append(h, plot);
     grid.append(panel);
   }
   // Spend per model: one horizontal bar per model so the ranking reads at a glance.
@@ -437,23 +539,39 @@ function sessionSpendPanel(
   const stack = sessionSpendStack(activity.columns, model.sessionBuckets, (b) => bucketSpend(b, model.pricing), activity.range);
   const series = stack.sessions.map((id, row) => ({
     key: id,
-    name: sessionLabel(id),
+    name: sessionDisplayLabel(id, model.sessionTitles), hover: sessionHoverLabel(id, model.sessionTitles),
     color: sessionColorFor(id, PALETTE),
     values: stack.values[row] ?? [],
   }));
-  const svg = stackedBars(activity.columns, series, {
-    unit: '$',
-    format: formatCost,
-    tooltip: tip,
-    activatable: {
-      label: (key, col) => {
-        const s = series.find((x) => x.key === key);
-        return `${s?.name ?? key} · ${formatCost(s?.values[col] ?? 0)} · ${axisLabel(activity.columns, col)}`;
-      },
-      activate: (key) => actions.onOpenSession(key),
-    },
-  });
-  panel.append(h, svg, legendRow(series));
+  // Same interactive legend contract as the model charts: plain click isolates
+  // one session, shift-click hides just it, Escape / the reset pill shows all,
+  // and every redraw keeps each segment's drill-down into its session.
+  const plot = document.createElement('div');
+  plot.className = 'chart-plot';
+  let state: LegendState = resetLegend();
+  const redraw = (): void => {
+    const visible = visibleLegendSeries(state, series);
+    plot.replaceChildren(
+      stackedBars(activity.columns, visible, {
+        unit: '$',
+        format: formatCost,
+        tooltip: tip,
+        activatable: {
+          label: (key, col) => {
+            const s = visible.find((x) => x.key === key);
+            return `${s?.name ?? key} · ${formatCost(s?.values[col] ?? 0)} · ${axisLabel(activity.columns, col)}`;
+          },
+          activate: (key) => actions.onOpenSession(key),
+        },
+      }),
+      legendRow(series, state, (next) => {
+        state = next;
+        redraw();
+      }),
+    );
+  };
+  redraw();
+  panel.append(h, plot);
   return panel;
 }
 
@@ -477,7 +595,7 @@ function sessionDurationPanel(activity: Activity, model: ActivityModel): HTMLEle
   const sub = document.createElement('p');
   sub.className = 'footnote chart-sub';
   sub.textContent =
-    'Mean elapsed time (first span start to last span end, idle gaps included) of the sessions that STARTED in each column. Only sessions whose start falls inside the selected range are counted. This is a wall-clock proxy measured from the transcripts: a session left open shows the whole gap, and time after its last recorded activity is not counted — it is not time to a merged PR.'
+    'Mean elapsed time (first span start to last span end, idle gaps included) of the sessions that STARTED in each column. Only sessions whose start falls inside the selected range are counted. This is a wall-clock proxy measured from the transcripts: a session left open shows the whole gap, and time after its last recorded activity is not counted — it is not time to a merged PR. The y-axis is labeled in human-readable durations (seconds, minutes, hours).'
     + (cohorts.excluded > 0
       ? ` ${formatCount(cohorts.excluded)} session${cohorts.excluded === 1 ? '' : 's'} excluded for having no measurable duration.`
       : '');
@@ -485,11 +603,49 @@ function sessionDurationPanel(activity: Activity, model: ActivityModel): HTMLEle
   return panel;
 }
 
+/**
+ * Y-axis label for a duration axis: never a raw millisecond count, always the
+ * human-readable minute/hour form (`45.0 s`, `12m 30s`, `1h 0m`).
+ */
+export function durationTickLabel(ms: number): string {
+  return formatDuration(ms);
+}
+
+/**
+ * Tick values for a duration axis, stepped from human units (seconds, minutes,
+ * hours, days) so gridlines land on readable durations — 30m, 1h, 2h — rather
+ * than raw millisecond magnitudes such as 3.6M. The last tick is at or above
+ * `maxMs` so the axis always covers the data.
+ */
+export function niceDurationTicks(maxMs: number): number[] {
+  if (!Number.isFinite(maxMs) || maxMs <= 0) return [0, 1_000];
+  const MINUTE = 60_000;
+  const HOUR = 3_600_000;
+  const DAY = 86_400_000;
+  const steps = [
+    1_000, 5_000, 10_000, 15_000, 30_000,
+    MINUTE, 2 * MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 30 * MINUTE,
+    HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR,
+    DAY, 2 * DAY, 7 * DAY,
+  ];
+  const target = maxMs / 4;
+  let step = steps[steps.length - 1] ?? 1_000;
+  for (const s of steps) {
+    if (s >= target) {
+      step = s;
+      break;
+    }
+  }
+  const ticks: number[] = [];
+  for (let v = 0; v <= maxMs + step * 0.001; v += step) ticks.push(v);
+  return ticks;
+}
+
 /** One bar per column's mean duration; a column with no measurable session shows an en dash. */
 function durationBars(columns: number[], perColumn: Array<number | null>): SVGElement {
   const W = 640;
   const H = 170;
-  const M = { top: 16, right: 8, bottom: 20, left: 48 };
+  const M = { top: 16, right: 8, bottom: 20, left: 62 };
   const svg = svgEl('svg', { class: 'chart', viewBox: `0 0 ${W} ${H}`, width: '100%' });
   if (columns.length === 0) return svg;
   const plotH = H - M.top - M.bottom;
@@ -497,11 +653,11 @@ function durationBars(columns: number[], perColumn: Array<number | null>): SVGEl
   const slot = plotW / Math.max(columns.length, 1);
   const barW = Math.max(1, Math.min(slot * 0.8, 40));
   const max = Math.max(...perColumn.map((v) => v ?? 0), 0) || 1;
-  for (const t of niceTicks(max)) {
+  for (const t of niceDurationTicks(max)) {
     const y = H - M.bottom - (t / max) * plotH;
     svg.append(svgEl('line', { x1: M.left, x2: W - M.right, y1: y, y2: y, class: 'chart-gridline' }));
     const label = svgEl('text', { x: M.left - 6, y: y + 4, class: 'chart-label', 'text-anchor': 'end' });
-    label.textContent = formatTick(t, max, '');
+    label.textContent = durationTickLabel(t);
     svg.append(label);
   }
   const step = Math.max(1, Math.ceil(columns.length / 7));
@@ -740,17 +896,60 @@ export function stackedBars(
   return svg;
 }
 
-function legendRow(series: Array<{ key: string; name: string; color: string }>): HTMLElement {
+/**
+ * Interactive legend: each key is a focusable button. Plain click/Enter/Space
+ * isolates the key, Shift+click/Shift+Enter/Space hides just it, Escape (and
+ * the reset affordance) shows all. `hover` carries the untruncated label.
+ */
+function legendRow(
+  series: Array<{ key: string; name: string; color: string; hover?: string }>,
+  state: LegendState = resetLegend(),
+  onChange?: (next: LegendState) => void,
+): HTMLElement {
   const row = document.createElement('div');
   row.className = 'chart-legend';
+  const keys = series.map((s) => s.key);
   for (const s of series) {
-    const item = document.createElement('span');
+    const visible = legendVisible(state, s.key);
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'legend-item';
+    if (!visible) item.classList.add('legend-item--muted');
+    if (state.isolated === s.key) item.classList.add('legend-item--isolated');
+    item.setAttribute('aria-pressed', String(visible));
+    item.title = `${s.hover ?? s.name} — click to isolate, shift-click to hide`;
     const swatch = document.createElement('span');
     swatch.className = 'legend-swatch';
     swatch.style.background = s.color;
-    item.append(swatch, document.createTextNode(s.name));
+    const label = document.createElement('span');
+    label.className = 'legend-label';
+    label.textContent = s.name;
+    item.append(swatch, label);
+    if (onChange !== undefined) {
+      const commit = (exclusive: boolean): void => onChange(toggleLegend(state, s.key, { exclusive, keys }));
+      item.addEventListener('click', (e) => commit(!(e as MouseEvent).shiftKey));
+      item.addEventListener('keydown', (e) => {
+        const key = (e as KeyboardEvent).key;
+        if (key === 'Enter' || key === ' ') {
+          e.preventDefault();
+          commit(!(e as KeyboardEvent).shiftKey);
+        } else if (key === 'Escape') {
+          e.preventDefault();
+          onChange(resetLegend());
+        }
+      });
+    }
     row.append(item);
+  }
+  if (onChange !== undefined && legendFiltered(state)) {
+    const hidden = legendHiddenCount(state, keys);
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'legend-reset';
+    reset.textContent = hidden > 0 ? `${hidden} hidden · show all` : 'show all';
+    reset.title = 'Show every series (Esc)';
+    reset.addEventListener('click', () => onChange(resetLegend()));
+    row.append(reset);
   }
   return row;
 }

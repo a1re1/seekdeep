@@ -7,6 +7,20 @@ import {
   toggleHarness,
 } from '../src/ui/activity-view.ts';
 import { RANGE_PRESETS } from '../src/stats.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  legendFiltered,
+  legendHiddenCount,
+  legendVisible,
+  resetLegend,
+  sessionDisplayLabel,
+  sessionHoverLabel,
+  SESSION_LABEL_MAX,
+  toggleLegend,
+  visibleLegendSeries,
+  type LegendState,
+} from '../src/ui/activity-view.ts';
 
 describe('modelSeries', () => {
   test('gives each model its own per-column values (series is [model][column])', () => {
@@ -371,5 +385,156 @@ describe('session spend conservation against aggregate with a future bucket', ()
       expect(stack.totals[c]).toBeCloseTo(colCost, 9);
     }
     expect(stack.totals.reduce((acc, v) => acc + v, 0)).toBeCloseTo(agg.totals.costUsd, 9);
+  });
+});
+
+import { durationTickLabel, niceDurationTicks } from '../src/ui/activity-view.ts';
+
+describe('duration axis units', () => {
+  test('tick labels are human durations, never raw millisecond counts', () => {
+    expect(durationTickLabel(1_500)).toBe('1.50 s');
+    expect(durationTickLabel(45_000)).toBe('45.0 s');
+    expect(durationTickLabel(60_000)).toBe('1m 0s');
+    expect(durationTickLabel(750_000)).toBe('12m 30s');
+    expect(durationTickLabel(3_600_000)).toBe('1h 0m');
+    expect(durationTickLabel(3 * 3_600_000 + 30 * 60_000)).toBe('3h 30m');
+  });
+
+  test('a one-hour axis reads as minutes and hours, not 3.60M', () => {
+    const labels = niceDurationTicks(3_600_000).map(durationTickLabel);
+    expect(labels).toEqual(['0 µs', '15m 0s', '30m 0s', '45m 0s', '1h 0m']);
+    for (const l of labels) expect(l).not.toMatch(/[0-9][MK]$/);
+  });
+
+  test('ticks step in whole human units and always cover the data', () => {
+    for (const max of [1_000, 90_000, 3_600_000, 21_600_000, 3 * 86_400_000]) {
+      const ticks = niceDurationTicks(max);
+      expect(ticks[ticks.length - 1]!).toBeGreaterThanOrEqual(max);
+      const step = ticks[1]! - ticks[0]!;
+      expect(step % 1_000).toBe(0);
+      for (const t of ticks) expect(t % step).toBe(0);
+    }
+    // An hour-wide axis steps in whole 15-minute units; a six-hour axis in 2h.
+    expect(niceDurationTicks(3_600_000)[1]).toBe(900_000);
+    expect(niceDurationTicks(21_600_000)[1]).toBe(7_200_000);
+  });
+
+  test('degenerate axes still return a usable pair of ticks', () => {
+    expect(niceDurationTicks(0)).toEqual([0, 1_000]);
+    expect(niceDurationTicks(Number.NaN)).toEqual([0, 1_000]);
+  });
+});
+
+describe('legend interaction reducer', () => {
+  const keys = ['a', 'b', 'c'];
+
+  test('plain click isolates one key, and the isolated key again shows all', () => {
+    const iso = toggleLegend(resetLegend(), 'b', { exclusive: true, keys });
+    expect(legendVisible(iso, 'b')).toBe(true);
+    expect(legendVisible(iso, 'a')).toBe(false);
+    expect(legendFiltered(iso)).toBe(true);
+    expect(toggleLegend(iso, 'b', { exclusive: true, keys })).toEqual(resetLegend());
+  });
+
+  test('plain click on a different key moves the isolation', () => {
+    const iso = toggleLegend(resetLegend(), 'a', { exclusive: true, keys });
+    const moved = toggleLegend(iso, 'c', { exclusive: true, keys });
+    expect(legendVisible(moved, 'c')).toBe(true);
+    expect(legendVisible(moved, 'a')).toBe(false);
+  });
+
+  test('shift-click hides just that key and clicking it again restores it', () => {
+    const hiddenKey = toggleLegend(resetLegend(), 'b', { exclusive: false, keys });
+    expect(legendVisible(hiddenKey, 'b')).toBe(false);
+    expect(legendVisible(hiddenKey, 'a')).toBe(true);
+    expect(toggleLegend(hiddenKey, 'b', { exclusive: false, keys })).toEqual(resetLegend());
+  });
+
+  test('hiding the last visible key restores all instead of blanking the chart', () => {
+    let state: LegendState = resetLegend();
+    state = toggleLegend(state, 'a', { exclusive: false, keys });
+    state = toggleLegend(state, 'c', { exclusive: false, keys });
+    expect(legendHiddenCount(state, keys)).toBe(2);
+    const last = toggleLegend(state, 'b', { exclusive: false, keys });
+    expect(last).toEqual(resetLegend());
+    expect(keys.every((k) => legendVisible(last, k))).toBe(true);
+  });
+
+  test('reset shows every key again', () => {
+    expect(legendFiltered(resetLegend())).toBe(false);
+    expect(keys.every((k) => legendVisible(resetLegend(), k))).toBe(true);
+  });
+
+  test('visibleLegendSeries drops hidden keys from the values', () => {
+    const series = [
+      { key: 'a', values: [1] },
+      { key: 'b', values: [2] },
+    ];
+    const iso = toggleLegend(resetLegend(), 'a', { exclusive: true, keys: ['a', 'b'] });
+    expect(visibleLegendSeries(iso, series).map((s) => s.values[0])).toEqual([1]);
+    const hiddenKey = toggleLegend(resetLegend(), 'a', { exclusive: false, keys: ['a', 'b'] });
+    expect(visibleLegendSeries(hiddenKey, series).map((s) => s.key)).toEqual(['b']);
+    expect(visibleLegendSeries(resetLegend(), series)).toHaveLength(2);
+  });
+
+  test('the axis peak is recomputed over the visible series only', () => {
+    const series = [
+      { key: 'big', values: [0, 100, 0] },
+      { key: 'small', values: [0, 5, 0] },
+    ];
+    const columns = series[0]?.values.length ?? 0;
+    const peak = (state: LegendState): number => {
+      const vis = visibleLegendSeries(state, series);
+      let max = 0;
+      for (let i = 0; i < columns; i += 1) {
+        let total = 0;
+        for (const s of vis) total += s.values[i] ?? 0;
+        if (total > max) max = total;
+      }
+      return max;
+    };
+    expect(peak(resetLegend())).toBe(105);
+    const iso = toggleLegend(resetLegend(), 'small', { exclusive: true, keys: ['big', 'small'] });
+    expect(peak(iso)).toBe(5);
+  });
+});
+
+describe('sessionDisplayLabel', () => {
+  const id = 'claude:/home/me/.claude/projects/x/transcript.jsonl';
+
+  test('a meaningful title becomes the legend key', () => {
+    expect(sessionDisplayLabel(id, { [id]: 'Fix the legend overflow' })).toBe('Fix the legend overflow');
+  });
+
+  test('a generic title is rejected in favour of the stable session id', () => {
+    expect(sessionDisplayLabel(id, { [id]: 'transcript' })).toBe(id);
+    expect(sessionDisplayLabel(id, { [id]: 'Session' })).toBe(id);
+    expect(sessionDisplayLabel(id, { [id]: '   ' })).toBe(id);
+    expect(sessionDisplayLabel('upload:my-drop.jsonl')).toBe('upload:my-drop.jsonl');
+  });
+
+  test('a long title is a brief preview with an ellipsis; hover keeps the full text', () => {
+    const title = 'a'.repeat(200);
+    const label = sessionDisplayLabel(id, { [id]: title });
+    expect(label.length).toBe(SESSION_LABEL_MAX);
+    expect(label.endsWith('\u2026')).toBe(true);
+    expect(label).toBe(`${title.slice(0, SESSION_LABEL_MAX - 1)}\u2026`);
+    expect(sessionHoverLabel(id, { [id]: title })).toBe(title);
+  });
+
+  test('whitespace is collapsed in the preview', () => {
+    expect(sessionDisplayLabel(id, { [id]: 'two\n lines' })).toBe('two lines');
+  });
+});
+
+describe('legend overflow styles', () => {
+  test('the stylesheet clamps the legend to a themed scrollable box', () => {
+    const css = readFileSync(join(import.meta.dir, '..', 'public', 'styles.css'), 'utf8');
+    expect(css).toMatch(/\.chart-legend[^{]*\{[^}]*max-height/);
+    expect(css).toMatch(/\.chart-legend[^{]*\{[^}]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.chart-legend::-webkit-scrollbar-thumb\s*\{[^}]*var\(--stroke-control\)/);
+    expect(css).toContain('.legend-item--muted');
+    expect(css).toContain('.legend-item--isolated');
+    expect(css).toContain('.legend-reset');
   });
 });
