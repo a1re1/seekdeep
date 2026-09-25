@@ -283,13 +283,14 @@ function nextEdge(ms: number, stepMs: number): number {
 /**
  * A time-range preset selectable in the activity view and session picker.
  */
-export type RangePreset = '1h' | '3h' | '6h' | '24h' | '48h' | '7d' | '30d' | 'all';
+export type RangePreset = '1h' | '3h' | '6h' | '12h' | '24h' | '48h' | '7d' | '30d' | 'all';
 
 /** Picker/toolbar presets in display order, with their labels. */
 export const RANGE_PRESETS: ReadonlyArray<readonly [RangePreset, string]> = [
   ['1h', 'Past hour'],
   ['3h', 'Past 3 hours'],
   ['6h', 'Past 6 hours'],
+  ['12h', 'Past 12 hours'],
   ['24h', 'Past 24 hours'],
   ['48h', 'Past 48 hours'],
   ['7d', 'Past 7 days'],
@@ -298,7 +299,7 @@ export const RANGE_PRESETS: ReadonlyArray<readonly [RangePreset, string]> = [
 ] as const;
 
 /** Hour count for the sub-48h hourly presets, or undefined for the others. */
-const PRESET_HOURS: Partial<Record<RangePreset, number>> = { '1h': 1, '3h': 3, '6h': 6, '24h': 24 };
+const PRESET_HOURS: Partial<Record<RangePreset, number>> = { '1h': 1, '3h': 3, '6h': 6, '12h': 12, '24h': 24 };
 
 function presetHours(preset: RangePreset): number | undefined {
   return PRESET_HOURS[preset];

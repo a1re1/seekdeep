@@ -24,11 +24,12 @@ function bucket(hourMs: number, model: string, over: Partial<UsageBucket> = {}):
 }
 
 describe('range presets', () => {
-  test('exposes the eight presets in display order with the agreed labels', () => {
+  test('exposes the nine presets in display order with the agreed labels', () => {
     expect(RANGE_PRESETS).toEqual([
       ['1h', 'Past hour'],
       ['3h', 'Past 3 hours'],
       ['6h', 'Past 6 hours'],
+      ['12h', 'Past 12 hours'],
       ['24h', 'Past 24 hours'],
       ['48h', 'Past 48 hours'],
       ['7d', 'Past 7 days'],
@@ -40,7 +41,7 @@ describe('range presets', () => {
   test('sub-48h presets use hourly buckets with a floored, inclusive start', () => {
     // NOW = 2026-09-01T15:30:00Z is not hour-aligned on purpose.
     const h = Math.floor(NOW / HOUR) * HOUR;
-    for (const [preset, hours] of [['1h', 1], ['3h', 3], ['6h', 6], ['24h', 24]] as const) {
+    for (const [preset, hours] of [['1h', 1], ['3h', 3], ['6h', 6], ['12h', 12], ['24h', 24]] as const) {
       const r = rangeFor(preset as RangePreset, NOW, []);
       expect(r.stepMs).toBe(HOUR);
       expect(r.startMs).toBe(Math.floor((NOW - hours * HOUR) / HOUR) * HOUR);

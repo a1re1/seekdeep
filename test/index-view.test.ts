@@ -16,6 +16,7 @@ describe('picker range cutoff (rangeCutoffMs/withinRange)', () => {
     expect(rangeCutoffMs('1h', NOW)).toBe(Date.parse('2026-09-01T14:00:00Z'));
     expect(rangeCutoffMs('3h', NOW)).toBe(Date.parse('2026-09-01T12:00:00Z'));
     expect(rangeCutoffMs('6h', NOW)).toBe(Date.parse('2026-09-01T09:00:00Z'));
+    expect(rangeCutoffMs('12h', NOW)).toBe(Date.parse('2026-09-01T03:00:00Z'));
     expect(rangeCutoffMs('24h', NOW)).toBe(Date.parse('2026-08-31T15:00:00Z'));
   });
 

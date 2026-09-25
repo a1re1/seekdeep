@@ -128,12 +128,13 @@ describe('reconcileHarnessSelection', () => {
 });
 
 describe('activity range presets (toolbar select options)', () => {
-  test('the range select offers the eight presets in display order with the agreed labels', () => {
+  test('the range select offers the nine presets in display order with the agreed labels', () => {
     const options: ReadonlyArray<readonly [string, string]> = RANGE_PRESETS.map(([preset, label]) => [preset, label]);
     expect(options).toEqual([
       ['1h', 'Past hour'],
       ['3h', 'Past 3 hours'],
       ['6h', 'Past 6 hours'],
+      ['12h', 'Past 12 hours'],
       ['24h', 'Past 24 hours'],
       ['48h', 'Past 48 hours'],
       ['7d', 'Past 7 days'],
@@ -448,6 +449,17 @@ describe('legend interaction reducer', () => {
     expect(legendVisible(hiddenKey, 'b')).toBe(false);
     expect(legendVisible(hiddenKey, 'a')).toBe(true);
     expect(toggleLegend(hiddenKey, 'b', { exclusive: false, keys })).toEqual(resetLegend());
+  });
+
+  test('shift-click while a key is isolated leaves isolation and hides that key', () => {
+    const iso = toggleLegend(resetLegend(), 'a', { exclusive: true, keys });
+    const hid = toggleLegend(iso, 'b', { exclusive: false, keys });
+    expect(legendVisible(hid, 'a')).toBe(true);
+    expect(legendVisible(hid, 'b')).toBe(false);
+    expect(legendVisible(hid, 'c')).toBe(true);
+    // Shift-clicking the hidden key again brings it back.
+    const back = toggleLegend(hid, 'b', { exclusive: false, keys });
+    expect(keys.every((k) => legendVisible(back, k))).toBe(true);
   });
 
   test('hiding the last visible key restores all instead of blanking the chart', () => {

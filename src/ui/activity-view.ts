@@ -84,8 +84,12 @@ export function toggleLegend(
   if (opts.exclusive === true) {
     return state.isolated === key ? resetLegend() : { isolated: key, hidden: [] };
   }
-  const hidden = state.hidden.includes(key) ? state.hidden.filter((k) => k !== key) : [...state.hidden, key];
-  const next: LegendState = { isolated: state.isolated, hidden };
+  // Shift-click hides one key. While another key is isolated the isolation
+  // still wins for every key, so a plain hide would look dead — leaving
+  // isolation first keeps the whole legend reachable from either gesture.
+  const base = state.isolated === null ? state : resetLegend();
+  const hidden = base.hidden.includes(key) ? base.hidden.filter((k) => k !== key) : [...base.hidden, key];
+  const next: LegendState = { isolated: base.isolated, hidden };
   if (opts.keys !== undefined && legendHiddenCount(next, opts.keys) >= opts.keys.length) return resetLegend();
   return next;
 }
@@ -933,13 +937,19 @@ function legendRow(
         if (key === 'Enter' || key === ' ') {
           e.preventDefault();
           commit(!(e as KeyboardEvent).shiftKey);
-        } else if (key === 'Escape') {
-          e.preventDefault();
-          onChange(resetLegend());
         }
       });
     }
     row.append(item);
+  }
+  if (onChange !== undefined) {
+    // Esc restores every key from anywhere inside the legend — a key or the
+    // reset pill — and stays scoped to this chart so it cannot steal Escape.
+    row.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key !== 'Escape') return;
+      e.preventDefault();
+      onChange(resetLegend());
+    });
   }
   if (onChange !== undefined && legendFiltered(state)) {
     const hidden = legendHiddenCount(state, keys);
