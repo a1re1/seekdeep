@@ -2,7 +2,7 @@
 // inspector + cache trace, summary cards, activity and settings pages. All
 // state lives in the browser; nothing is uploaded anywhere.
 
-import { clearActivityCache, collectBuckets } from './index/activity-cache.ts';
+import { clearActivityCache, collectBuckets, sessionIdentity } from './index/activity-cache.ts';
 import { clearScanCache, scanWithCache } from './index/cache.ts';
 import { SOURCES, SOURCE_KINDS, forgetDirectory, isHostKind, pickDirectory, restoreDirectory, storedState } from './index/fs.ts';
 import type { SourceFile, SourceKind } from './index/fs.ts';
@@ -740,7 +740,22 @@ function main(): void {
     }
   }
 
-  function renderActivityPage(): void {
+  /**
+   * Legend labels for activity sessions: an indexed entry's title under its
+   * `kind:path` identity, and a dropped-in session's title under `upload:<id>`.
+   */
+  function activitySessionTitles(entries: SessionEntry[], extra: Session[]): Record<string, string> {
+    const titles: Record<string, string> = {};
+    for (const entry of entries) {
+      if (typeof entry.title === 'string' && entry.title.length > 0) titles[sessionIdentity(entry.kind, entry.path)] = entry.title;
+    }
+    for (const session of extra) {
+      if (typeof session.title === 'string' && session.title.length > 0) titles[`upload:${session.id}`] = session.title;
+    }
+    return titles;
+  }
+
+function renderActivityPage(): void {
     if (activity.page !== 'activity') return;
     const { entries, extra } = activitySources();
     const nothing = entries.length === 0 && extra.length === 0;
@@ -760,6 +775,7 @@ function main(): void {
         harnesses,
         harness: activity.harness,
         harnessOpen: activity.harnessOpen,
+        sessionTitles: activitySessionTitles(entries, extra),
         sessionBuckets: buckets ?? [],
         pricing: effectivePricing(),
         empty: nothing
