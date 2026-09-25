@@ -645,6 +645,11 @@ export function niceDurationTicks(maxMs: number): number[] {
   }
   const ticks: number[] = [];
   for (let v = 0; v <= maxMs + step * 0.001; v += step) ticks.push(v);
+  // The step comes from the human-unit ladder, so the loop can stop short of
+  // maxMs (1.5M with a 600k step yields 0/600k/1.2M) and the tallest bar would
+  // rise above the top gridline. Add the covering tick, still a whole step.
+  const last = ticks[ticks.length - 1] ?? 0;
+  if (last < maxMs) ticks.push(Math.ceil(maxMs / step) * step);
   return ticks;
 }
 

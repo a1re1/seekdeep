@@ -420,6 +420,19 @@ describe('duration axis units', () => {
     expect(niceDurationTicks(21_600_000)[1]).toBe(7_200_000);
   });
 
+  test('a maximum that is not a whole number of steps still gets a covering tick', () => {
+    // 1.5M with a 600k step used to yield 0/600k/1.2M, leaving a bar above the axis.
+    expect(niceDurationTicks(1_500_000)).toEqual([0, 600_000, 1_200_000, 1_800_000]);
+    expect(niceDurationTicks(4_000_000)).toEqual([0, 1_800_000, 3_600_000, 5_400_000]);
+    // Sampled across the axis range: every maximum is covered by a whole step.
+    for (let max = 60_000; max <= 6 * 3_600_000; max += 37_000) {
+      const ticks = niceDurationTicks(max);
+      const step = ticks[1]! - ticks[0]!;
+      expect(ticks[ticks.length - 1]!).toBeGreaterThanOrEqual(max);
+      for (const t of ticks) expect(t % step).toBe(0);
+    }
+  });
+
   test('degenerate axes still return a usable pair of ticks', () => {
     expect(niceDurationTicks(0)).toEqual([0, 1_000]);
     expect(niceDurationTicks(Number.NaN)).toEqual([0, 1_000]);
